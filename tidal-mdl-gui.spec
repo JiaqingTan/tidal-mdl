@@ -1,0 +1,94 @@
+# -*- mode: python ; coding: utf-8 -*-
+"""
+PyInstaller spec file for Tidal MDL GUI
+Build with: pyinstaller tidal-mdl-gui.spec
+"""
+
+import sys
+from pathlib import Path
+
+is_windows = sys.platform == 'win32'
+is_macos = sys.platform == 'darwin'
+
+block_cipher = None
+
+a = Analysis(
+    ['gui.py'],
+    pathex=[],
+    binaries=[],
+    datas=[
+        ('.env.example', '.'),
+    ],
+    hiddenimports=[
+        'tidalapi',
+        'tidalapi.session',
+        'tidalapi.media',
+        'tidalapi.album',
+        'tidalapi.artist',
+        'tidalapi.playlist',
+        'tidalapi.user',
+        'tidalapi.mix',
+        'tidalapi.page',
+        'mutagen',
+        'mutagen.flac',
+        'mutagen.mp4',
+        'mutagen.id3',
+        'customtkinter',
+        'PIL',
+        'PIL.Image',
+        'requests',
+        'mpegdash',
+        'mpegdash.parser',
+        'isodate',
+        'dateutil',
+        'dateutil.parser',
+        'darkdetect',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+# For GUI apps, we use windowed mode (no console)
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name='tidal-mdl-gui',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,  # No console window for GUI
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon='icon.ico' if is_windows and Path('icon.ico').exists() else None,
+)
+
+# macOS app bundle
+if is_macos:
+    app = BUNDLE(
+        exe,
+        name='Tidal MDL.app',
+        icon=None,
+        bundle_identifier='com.tidal-mdl.app',
+        info_plist={
+            'NSHighResolutionCapable': 'True',
+            'CFBundleShortVersionString': '1.0.0',
+        },
+    )

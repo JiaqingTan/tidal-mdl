@@ -1,12 +1,20 @@
 # 🎵 Tidal MDL
 
-A command-line tool to download high-quality music from Tidal.
+A beautiful app to download high-quality music from Tidal.
 
 ![Screenshot](tidal-mdl-screenshot.png)
 
+## Features
+
+- 🎨 **Modern UI** - Beautiful pastel-themed interface
+- 🖼️ **Visual Search** - Album art thumbnails everywhere
+- 📥 **Queue Management** - Full control over downloads
+- ⚙️ **Configurable** - All settings in one place
+- 🎧 **Hi-Res Audio** - FLAC up to 24-bit/192kHz
+
 ## Quick Start
 
-### Download Executable (Easiest)
+### Download Executable
 
 Download from [Releases](../../releases):
 
@@ -26,7 +34,10 @@ python3 -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# Run
+# Run GUI
+python gui.py
+
+# Or run CLI
 python cli.py
 ```
 
@@ -46,18 +57,26 @@ sudo apt install ffmpeg
 
 ## Usage
 
+### GUI Mode (Recommended)
+
+```bash
+python gui.py
+```
+
+The GUI provides:
+- 🔍 **Search** - Find albums, tracks, artists
+- 📥 **Downloads** - Manage your download queue
+- ⚙️ **Settings** - Configure all options visually
+
+### CLI Mode
+
 ```bash
 # Interactive mode
 python cli.py
 
 # Direct download
 python cli.py --download "https://tidal.com/browse/album/12345678"
-
-# Set quality
-python cli.py --quality HI_RES
 ```
-
-### Commands
 
 | Command | Description |
 |---------|-------------|
@@ -70,7 +89,9 @@ python cli.py --quality HI_RES
 
 ## Configuration
 
-Copy `.env.example` to `.env` and customize:
+Settings can be configured via:
+- **GUI**: Settings page with visual controls
+- **CLI**: Edit `.env` file
 
 ```ini
 DOWNLOAD_QUALITY=HI_RES    # NORMAL, HIGH, LOSSLESS, HI_RES
@@ -107,6 +128,6 @@ build.bat
 ## Credits
 
 Built with:
+- [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) - Modern UI
 - [tidalapi](https://github.com/tamland/python-tidal) - Tidal API
-- [Rich](https://github.com/Textualize/rich) - Terminal UI
 - [Mutagen](https://github.com/quodlibet/mutagen) - Audio metadata

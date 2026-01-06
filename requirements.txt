@@ -1,9 +1,19 @@
-# Tidal DL CLI - Python Dependencies
+# Tidal MDL - Python Dependencies
+
+# Core
 tidalapi>=0.8.10
 requests>=2.31.0
-rich>=13.7.0
-click>=8.1.7
 python-dotenv>=1.0.0
 mutagen>=1.47.0
+
+# CLI
+rich>=13.7.0
+click>=8.1.7
+
+# Async (for future use)
 aiohttp>=3.9.0
 aiofiles>=23.2.1
+
+# GUI
+customtkinter>=5.2.0
+Pillow>=10.0.0

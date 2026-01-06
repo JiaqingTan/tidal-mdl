@@ -147,9 +147,31 @@ class DownloadTask:
     album: Optional[tidalapi.Album] = None
     track_number: int = 1
     total_tracks: int = 1
+    # Stream info (populated during download)
+    codec: Optional[str] = None
+    quality: Optional[str] = None
+    bit_depth: Optional[int] = None
+    sample_rate: Optional[int] = None
+    # Conversion tracking
+    is_converting: bool = False
+    conversion_progress: float = 0.0
     
     def __hash__(self):
         return hash(self.id)
+    
+    @property
+    def format_info(self) -> str:
+        """Get formatted string of codec/quality info"""
+        if not self.codec:
+            return ""
+        parts = []
+        if self.codec:
+            parts.append(self.codec)
+        if self.bit_depth and self.sample_rate:
+            parts.append(f"{self.bit_depth}bit/{self.sample_rate/1000:.1f}kHz")
+        elif self.quality:
+            parts.append(str(self.quality))
+        return " • ".join(parts)
 
 
 class DownloadQueue:
@@ -272,11 +294,13 @@ class DownloadQueue:
             try:
                 logger.info(f"Starting download: {task.item.name} ({task.id})")
                 
-                # Create progress task
-                task_id = progress.add_task(
-                    f"[cyan]{task.item.name[:30]}...[/cyan]" if len(task.item.name) > 30 else f"[cyan]{task.item.name}[/cyan]",
-                    total=100
-                )
+                # Create progress task (only if progress UI is available)
+                task_id = None
+                if progress is not None:
+                    task_id = progress.add_task(
+                        f"[cyan]{task.item.name[:30]}...[/cyan]" if len(task.item.name) > 30 else f"[cyan]{task.item.name}[/cyan]",
+                        total=100
+                    )
                 
                 # Download the item
                 success = self._download_item(task, progress, task_id)
@@ -293,8 +317,9 @@ class DownloadQueue:
                         self.failed.append(task)
                     logger.error(f"Failed download: {task.item.name} - {task.error}")
                 
-                progress.update(task_id, completed=100)
-                progress.remove_task(task_id)
+                if progress is not None and task_id is not None:
+                    progress.update(task_id, completed=100)
+                    progress.remove_task(task_id)
                 
             except Exception as e:
                 task.status = DownloadStatus.FAILED
@@ -397,6 +422,12 @@ class DownloadQueue:
             codec = getattr(manifest, 'codecs', 'unknown')
             file_ext = getattr(manifest, 'file_extension', '.m4a')
             
+            # Store stream info in task for GUI display
+            task.codec = codec
+            task.quality = str(actual_quality) if actual_quality else None
+            task.bit_depth = bit_depth
+            task.sample_rate = sample_rate
+            
             logger.info(f"Stream received: quality={actual_quality}, codec={codec}, "
                        f"bit_depth={bit_depth}, sample_rate={sample_rate}, extension={file_ext}")
             
@@ -454,7 +485,9 @@ class DownloadQueue:
                             downloaded += len(chunk)
                             if total_size > 0:
                                 pct = (downloaded / total_size) * 100
-                                progress.update(task_id, completed=pct)
+                                task.progress = pct
+                                if progress is not None and task_id is not None:
+                                    progress.update(task_id, completed=pct)
             else:
                 # For segmented streams (DASH), concatenate segments
                 with open(download_path, "wb") as f:
@@ -463,12 +496,18 @@ class DownloadQueue:
                         response.raise_for_status()
                         f.write(response.content)
                         pct = ((i + 1) / len(urls)) * 100
-                        progress.update(task_id, completed=pct)
+                        task.progress = pct
+                        if progress is not None and task_id is not None:
+                            progress.update(task_id, completed=pct)
             
             # Remux if needed (FLAC in MP4 container -> native FLAC)
             if needs_remux:
                 logger.info(f"Remuxing {download_path} to {final_path}")
+                task.is_converting = True
+                task.conversion_progress = 0.0
                 if remux_to_flac(download_path, final_path):
+                    task.conversion_progress = 100.0
+                    task.is_converting = False  # Reset after conversion
                     # Remove temp file
                     try:
                         download_path.unlink()
@@ -476,6 +515,7 @@ class DownloadQueue:
                         logger.warning(f"Failed to remove temp file: {e}")
                 else:
                     # Remux failed - keep the M4A file
+                    task.is_converting = False  # Reset after conversion
                     logger.warning("Remux failed - keeping M4A file")
                     final_path = safe_add_extension(download_path.parent / download_path.stem.replace('.tmp', ''), ".m4a")
                     shutil.move(str(download_path), str(final_path))
@@ -530,7 +570,9 @@ class DownloadQueue:
                         downloaded += len(chunk)
                         if total_size > 0:
                             pct = (downloaded / total_size) * 100
-                            progress.update(task_id, completed=pct)
+                            task.progress = pct
+                            if progress is not None and task_id is not None:
+                                progress.update(task_id, completed=pct)
             
             return True
             
