@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build script for Tidal Media Downloader (macOS/Linux)
+# Build script for Tidal MDL (macOS/Linux)
 # Usage: ./build.sh
 
 set -e
 
-echo "🎵 Building Tidal Media Downloader..."
+echo "🎵 Building Tidal MDL..."
 
 # Check if virtual environment exists
 if [ ! -d "venv" ]; then
@@ -22,15 +22,15 @@ pip install pyinstaller
 
 # Build executable
 echo "Building executable..."
-pyinstaller tidal-media-downloader.spec --clean
+pyinstaller tidal-mdl.spec --clean
 
 # Check if build was successful
-if [ -f "dist/tidal-media-downloader" ]; then
+if [ -f "dist/tidal-mdl" ]; then
     echo ""
     echo "✅ Build successful!"
-    echo "📦 Executable: dist/tidal-media-downloader"
+    echo "📦 Executable: dist/tidal-mdl"
     echo ""
-    echo "To run: ./dist/tidal-media-downloader"
+    echo "To run: ./dist/tidal-mdl"
 else
     echo "❌ Build failed!"
     exit 1

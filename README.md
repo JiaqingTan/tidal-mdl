@@ -1,8 +1,8 @@
-# 🎵 Tidal Media Downloader
+# 🎵 Tidal MDL
 
 A command-line tool to download high-quality music from Tidal.
 
-![Screenshot](tidal-media-downloader-screenshot.png)
+![Screenshot](tidal-mdl-screenshot.png)
 
 ## Quick Start
 
@@ -12,16 +12,16 @@ Download from [Releases](../../releases):
 
 | Platform | File |
 |----------|------|
-| Windows | `tidal-media-downloader-windows.exe` |
-| macOS | `tidal-media-downloader-macos` |
-| Linux | `tidal-media-downloader-linux` |
+| Windows | `tidal-mdl-windows.exe` |
+| macOS | `tidal-mdl-macos` |
+| Linux | `tidal-mdl-linux` |
 
 ### Run from Source
 
 ```bash
 # Clone and setup
-git clone https://github.com/yourusername/tidal-media-downloader.git
-cd tidal-media-downloader
+git clone https://github.com/yourusername/tidal-mdl.git
+cd tidal-mdl
 python3 -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt

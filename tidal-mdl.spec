@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for Tidal Media Downloader
-Build with: pyinstaller tidal-media-downloader.spec
+PyInstaller spec file for Tidal MDL
+Build with: pyinstaller tidal-mdl.spec
 """
 
 import sys
@@ -66,7 +66,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='tidal-media-downloader',
+    name='tidal-mdl',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

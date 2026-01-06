@@ -11,14 +11,14 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: tidal-media-downloader.exe
-            asset_name: tidal-media-downloader-windows.exe
+            artifact_name: tidal-mdl.exe
+            asset_name: tidal-mdl-windows.exe
           - os: macos-latest
-            artifact_name: tidal-media-downloader
-            asset_name: tidal-media-downloader-macos
+            artifact_name: tidal-mdl
+            asset_name: tidal-mdl-macos
           - os: ubuntu-latest
-            artifact_name: tidal-media-downloader
-            asset_name: tidal-media-downloader-linux
+            artifact_name: tidal-mdl
+            asset_name: tidal-mdl-linux
 
     runs-on: ${{ matrix.os }}
 
@@ -39,7 +39,7 @@ jobs:
 
       - name: Build executable
         run: |
-          pyinstaller tidal-media-downloader.spec --clean
+          pyinstaller tidal-mdl.spec --clean
 
       - name: Rename artifact for release
         run: |

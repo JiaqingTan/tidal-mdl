@@ -1,8 +1,8 @@
 @echo off
-REM Build script for Tidal Media Downloader (Windows)
+REM Build script for Tidal MDL (Windows)
 REM Usage: build.bat
 
-echo 🎵 Building Tidal Media Downloader...
+echo 🎵 Building Tidal MDL...
 
 REM Check if virtual environment exists
 if not exist "venv" (
@@ -20,15 +20,15 @@ pip install pyinstaller
 
 REM Build executable
 echo Building executable...
-pyinstaller tidal-media-downloader.spec --clean
+pyinstaller tidal-mdl.spec --clean
 
 REM Check if build was successful
-if exist "dist\tidal-media-downloader.exe" (
+if exist "dist\tidal-mdl.exe" (
     echo.
     echo ✅ Build successful!
-    echo 📦 Executable: dist\tidal-media-downloader.exe
+    echo 📦 Executable: dist\tidal-mdl.exe
     echo.
-    echo To run: dist\tidal-media-downloader.exe
+    echo To run: dist\tidal-mdl.exe
 ) else (
     echo ❌ Build failed!
     exit /b 1

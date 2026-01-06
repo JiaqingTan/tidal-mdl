@@ -42,7 +42,7 @@ class Config:
     skip_existing: bool = True
     
     # Session file path
-    session_file: Path = field(default_factory=lambda: Path.home() / ".tidal-media-downloader" / "session.json")
+    session_file: Path = field(default_factory=lambda: Path.home() / ".tidal-mdl" / "session.json")
 
 
 def load_config(env_path: Optional[Path] = None) -> Config:
