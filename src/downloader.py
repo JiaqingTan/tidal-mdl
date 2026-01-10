@@ -1,5 +1,5 @@
 """
-Download module for Tidal DL CLI
+Download module for Tidal MDL
 Handles downloading tracks, albums, playlists with rate limiting and concurrency
 """
 

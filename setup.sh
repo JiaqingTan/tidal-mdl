@@ -1,10 +1,10 @@
 #!/bin/bash
-# Setup script for Tidal DL CLI
+# Setup script for Tidal MDL
 
 set -e
 
-echo "🎵 Tidal DL CLI Setup"
-echo "===================="
+echo "Tidal MDL Setup"
+echo "==============="
 echo
 
 # Check Python version
@@ -34,11 +34,11 @@ fi
 mkdir -p downloads
 
 echo
-echo "✅ Setup complete!"
+echo "Setup complete!"
 echo
-echo "To start using Tidal DL CLI:"
+echo "To start Tidal MDL:"
 echo "  1. Activate the virtual environment: source venv/bin/activate"
-echo "  2. Run the application: python cli.py"
+echo "  2. Run the application: python gui.py"
 echo
 echo "Optional: Edit .env to customize your settings"
 echo

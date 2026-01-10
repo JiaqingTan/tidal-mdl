@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Tidal MDL - Main Command Line Interface
-A command-line Tidal media downloader
+Tidal MDL - Console Interface
+A Tidal media downloader for advanced users
 """
 
 import sys
@@ -59,7 +59,7 @@ BANNER = """
 ║     ██║   ██║██████╔╝██║  ██║███████╗  ██║ ╚═╝ ██║██████╔╝███████╗║
 ║     ╚═╝   ╚═╝╚═════╝ ╚═╝  ╚═╝╚══════╝  ╚═╝     ╚═╝╚═════╝ ╚══════╝║
 ║                                                                    ║
-║                    🎵 Tidal MDL 🎵                                ║
+║                         Tidal MDL                                 ║
 ╚════════════════════════════════════════════════════════════╝
 """
 
@@ -71,7 +71,7 @@ def show_banner():
 
 def show_status(config: Config, queue: Optional[DownloadQueue] = None):
     """Show current status and configuration"""
-    table = Table(title="📊 Current Status", box=box.ROUNDED)
+    table = Table(title="Current Status", box=box.ROUNDED)
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
     
@@ -79,8 +79,8 @@ def show_status(config: Config, queue: Optional[DownloadQueue] = None):
     table.add_row("Download Folder", str(config.download_folder.absolute()))
     table.add_row("Max Concurrent Downloads", str(config.max_concurrent_downloads))
     table.add_row("Rate Limit Delay", f"{config.rate_limit_delay}s")
-    table.add_row("Embed Album Art", "✓" if config.embed_album_art else "✗")
-    table.add_row("Skip Existing", "✓" if config.skip_existing else "✗")
+    table.add_row("Embed Album Art", "Yes" if config.embed_album_art else "No")
+    table.add_row("Skip Existing", "Yes" if config.skip_existing else "No")
     
     if queue:
         status = queue.get_status()
@@ -94,7 +94,7 @@ def show_status(config: Config, queue: Optional[DownloadQueue] = None):
 
 
 def interactive_mode(config: Config, session):
-    """Run the interactive CLI mode"""
+    """Run the interactive console mode"""
     queue = DownloadQueue(config, session)
     
     # Start background download workers

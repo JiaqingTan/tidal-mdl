@@ -1,5 +1,5 @@
 """
-Search module for Tidal DL CLI
+Search module for Tidal MDL
 Handles searching for tracks, albums, artists, and playlists
 """
 

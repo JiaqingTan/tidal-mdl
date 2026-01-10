@@ -1,5 +1,5 @@
 """
-Logging configuration for Tidal DL CLI
+Logging configuration for Tidal MDL
 """
 
 import logging

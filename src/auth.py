@@ -1,5 +1,5 @@
 """
-Authentication module for Tidal DL CLI
+Authentication module for Tidal MDL
 Handles OAuth2 browser-based login and session management
 """
 

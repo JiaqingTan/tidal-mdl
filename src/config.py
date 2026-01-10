@@ -1,5 +1,5 @@
 """
-Configuration management for Tidal DL CLI
+Configuration management for Tidal MDL
 Loads settings from .env file and provides defaults
 """
 
@@ -122,7 +122,7 @@ def save_config(config: Config, env_path: Path = Path(".env")) -> None:
         tidalapi.VideoQuality.high: "HIGH",
     }
     
-    content = f"""# Tidal DL CLI Configuration
+    content = f"""# Tidal MDL Configuration
 
 # Download Settings
 DOWNLOAD_QUALITY={quality_reverse.get(config.download_quality, "LOSSLESS")}

@@ -1,28 +1,25 @@
-# 🎵 Tidal MDL
+# Tidal MDL
 
 A beautiful app to download high-quality music from Tidal.
 
-![Screenshot](tidal-mdl-screenshot.png)
-
 ## Features
 
-- 🎨 **Modern UI** - Beautiful pastel-themed interface
-- 🖼️ **Visual Search** - Album art thumbnails everywhere
-- 📥 **Queue Management** - Full control over downloads
-- ⚙️ **Configurable** - All settings in one place
-- 🎧 **Hi-Res Audio** - FLAC up to 24-bit/192kHz
+- **Modern UI** - Clean, professional dark interface
+- **Visual Search** - Album art thumbnails everywhere
+- **Queue Management** - Full control over downloads
+- **Configurable** - All settings in one place
+- **Hi-Res Audio** - FLAC up to 24-bit/192kHz
 
 ## Quick Start
 
-### Download Executable
+### Download
 
 Download from [Releases](../../releases):
 
 | Platform | File |
 |----------|------|
-| Windows | `tidal-mdl-windows.exe` |
-| macOS | `tidal-mdl-macos` |
-| Linux | `tidal-mdl-linux` |
+| Windows | `tidal-mdl-gui-windows.exe` |
+| macOS | `tidal-mdl-gui-macos.zip` |
 
 ### Run from Source
 
@@ -34,11 +31,8 @@ python3 -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# Run GUI
+# Run
 python gui.py
-
-# Or run CLI
-python cli.py
 ```
 
 ### Optional: Install FFmpeg
@@ -49,55 +43,28 @@ FFmpeg enables native FLAC output for Hi-Res downloads:
 # macOS
 brew install ffmpeg
 
-# Ubuntu/Debian  
-sudo apt install ffmpeg
-
 # Windows: https://ffmpeg.org/download.html
 ```
 
 ## Usage
 
-### GUI Mode (Recommended)
+Launch the application and:
 
-```bash
-python gui.py
-```
-
-The GUI provides:
-- 🔍 **Search** - Find albums, tracks, artists
-- 📥 **Downloads** - Manage your download queue
-- ⚙️ **Settings** - Configure all options visually
-
-### CLI Mode
-
-```bash
-# Interactive mode
-python cli.py
-
-# Direct download
-python cli.py --download "https://tidal.com/browse/album/12345678"
-```
-
-| Command | Description |
-|---------|-------------|
-| `search <query>` | Search for music |
-| `dl-album <id>` | Download album |
-| `dl-track <id>` | Download track |
-| `dl-playlist <id>` | Download playlist |
-| `queue` | View download queue |
-| `help` | Show all commands |
+1. **Search** - Find albums and tracks
+2. **Add to Queue** - Click download on any result
+3. **Monitor** - View progress in Downloads tab
+4. **Configure** - Adjust settings as needed
 
 ## Configuration
 
-Settings can be configured via:
-- **GUI**: Settings page with visual controls
-- **CLI**: Edit `.env` file
+All settings are configurable via the Settings page:
 
-```ini
-DOWNLOAD_QUALITY=HI_RES    # NORMAL, HIGH, LOSSLESS, HI_RES
-DOWNLOAD_FOLDER=./downloads
-EMBED_ALBUM_ART=true
-```
+| Setting | Options |
+|---------|---------|
+| Download Quality | HI_RES, LOSSLESS, HIGH, NORMAL |
+| Download Folder | Browse to select |
+| Embed Album Art | On/Off |
+| Skip Existing | On/Off |
 
 ### Quality Options
 
@@ -110,15 +77,17 @@ EMBED_ALBUM_ART=true
 
 ## Build
 
+Build standalone executables:
+
 ```bash
 # macOS/Linux
-./build.sh
+pyinstaller tidal-mdl-gui.spec --clean
 
 # Windows
-build.bat
+pyinstaller tidal-mdl-gui.spec --clean
 ```
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 - **Private use only** - Do not distribute copyrighted content
 - **Requires Tidal HiFi subscription**

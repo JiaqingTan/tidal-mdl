@@ -1,4 +1,4 @@
-name: Build Releases
+name: Build GUI Releases
 
 on:
   release:
@@ -11,14 +11,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: tidal-mdl.exe
-            asset_name: tidal-mdl-windows.exe
+            artifact_name: tidal-mdl-gui.exe
+            asset_name: tidal-mdl-gui-windows.exe
           - os: macos-latest
-            artifact_name: tidal-mdl
-            asset_name: tidal-mdl-macos
-          - os: ubuntu-latest
-            artifact_name: tidal-mdl
-            asset_name: tidal-mdl-linux
+            artifact_name: Tidal MDL.app
+            asset_name: tidal-mdl-gui-macos.zip
 
     runs-on: ${{ matrix.os }}
 
@@ -37,13 +34,26 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Build executable
+      - name: Build GUI executable (Windows)
+        if: runner.os == 'Windows'
         run: |
-          pyinstaller tidal-mdl.spec --clean
+          pyinstaller tidal-mdl-gui.spec --clean
 
-      - name: Rename artifact for release
+      - name: Build GUI executable (macOS)
+        if: runner.os == 'macOS'
         run: |
-          mv dist/${{ matrix.artifact_name }} dist/${{ matrix.asset_name }}
+          pyinstaller tidal-mdl-gui.spec --clean
+
+      - name: Prepare Windows artifact
+        if: runner.os == 'Windows'
+        run: |
+          mv dist/tidal-mdl-gui.exe dist/${{ matrix.asset_name }}
+
+      - name: Prepare macOS artifact
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          zip -r "${{ matrix.asset_name }}" "Tidal MDL.app"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
