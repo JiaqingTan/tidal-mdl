@@ -1,4 +1,4 @@
-# Tidal MDL
+# Tidal Media Downloader (Tidal-MDL)
 
 A beautiful app to download high-quality music from Tidal.
 
