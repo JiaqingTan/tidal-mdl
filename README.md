@@ -1,6 +1,6 @@
 # Tidal Media Downloader (Tidal-MDL)
 
-A beautiful app to download high-quality music from Tidal.
+Basic GUI app to download high-quality music from Tidal.
 
 ## Features
 
