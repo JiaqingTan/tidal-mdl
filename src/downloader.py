@@ -306,11 +306,13 @@ class DownloadQueue:
                 success = self._download_item(task, progress, task_id)
                 
                 if success:
-                    task.status = DownloadStatus.COMPLETED
+                    # Preserve SKIPPED status; otherwise mark COMPLETED
+                    if task.status != DownloadStatus.SKIPPED:
+                        task.status = DownloadStatus.COMPLETED
                     task.progress = 100.0
                     with self.lock:
                         self.completed.append(task)
-                    logger.info(f"Completed download: {task.item.name}")
+                    logger.info(f"Completed download: {task.item.name} (status: {task.status.value})")
                 else:
                     task.status = DownloadStatus.FAILED
                     with self.lock:
@@ -844,33 +846,61 @@ def create_album_tasks(
 def create_playlist_tasks(
     config: Config,
     session: tidalapi.Session,
-    playlist: tidalapi.Playlist
+    playlist: tidalapi.Playlist,
+    as_compilation: bool = True
 ) -> List[DownloadTask]:
-    """Create download tasks for all tracks in a playlist"""
+    """
+    Create download tasks for all tracks in a playlist
+    
+    Args:
+        config: Application config
+        session: Tidal session
+        playlist: Playlist to download
+        as_compilation: If True, save as "Various Artists - PlaylistName" folder.
+                       If False, organize by original artist/album.
+    """
     tasks = []
     
     try:
         tracks = playlist.tracks()
         total_tracks = len(tracks)
         
-        # Use playlist name as folder
         playlist_folder = sanitize_filename(playlist.name or "Unknown Playlist")
         
         for idx, track in enumerate(tracks, 1):
-            # Create path within playlist folder
             artist_name = sanitize_filename(track.artist.name if track.artist else "Unknown Artist")
             track_title = sanitize_filename(track.name or "Unknown Track")
             
-            file_name = f"{idx:02d} - {artist_name} - {track_title}"
-            output_path = config.download_folder / "Playlists" / playlist_folder / file_name
+            if as_compilation:
+                # Save as single folder with playlist name
+                file_name = f"{idx:02d} - {artist_name} - {track_title}"
+                output_path = config.download_folder / playlist_folder / file_name
+            else:
+                # Organize by original artist/album
+                album = track.album
+                if album:
+                    album_name = sanitize_filename(album.name or "Unknown Album")
+                    year = album.release_date.year if album.release_date else "Unknown"
+                    folder = f"{artist_name}/{album_name} [{year}]"
+                else:
+                    folder = f"{artist_name}/Singles"
+                
+                # Use track's album track number if available
+                track_num = track.track_num if hasattr(track, 'track_num') and track.track_num else idx
+                file_name = f"{track_num:02d} - {track_title}"
+                output_path = config.download_folder / folder / file_name
+            
+            # Get playlist ID (could be 'id' or 'uuid' depending on API version)
+            playlist_id = getattr(playlist, 'id', None) or getattr(playlist, 'uuid', 'unknown')
             
             task = DownloadTask(
-                id=f"track_{track.id}_pl_{playlist.uuid}_{idx}",
+                id=f"track_{track.id}_pl_{playlist_id}_{idx}",
                 item=track,
                 item_type="track",
                 output_path=output_path,
                 track_number=idx,
                 total_tracks=total_tracks,
+                album=track.album if hasattr(track, 'album') else None,
             )
             tasks.append(task)
     except Exception as e:

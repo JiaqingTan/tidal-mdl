@@ -20,7 +20,7 @@ import requests
 
 from src.config import Config, load_config
 from src.auth import get_authenticated_session, delete_session
-from src.search import search, SearchType
+from src.search import search, SearchType, SearchResult
 from src.downloader import (
     DownloadQueue, DownloadTask, DownloadStatus,
     create_album_tasks, create_track_task,
@@ -70,11 +70,78 @@ class TidalMDLApp(ctk.CTk):
         self.download_queue = None
         self.expanded_albums = {}  # Track which albums are expanded (album_id -> bool)
         
+        # Image cache to prevent memory leaks and improve performance
+        # LRU cache with max 100 images
+        self._image_cache = {}
+        self._image_cache_order = []
+        self._max_cached_images = 100
+        
+        # Thread pool for image loading (limit concurrent downloads)
+        from concurrent.futures import ThreadPoolExecutor
+        self._image_executor = ThreadPoolExecutor(max_workers=5)
+        
+        # Search state for pagination
+        self.search_results = None
+        self.search_query = ""  # Current search query
+        self.albums_page = 0
+        self.tracks_page = 0
+        self.playlists_page = 0
+        self.ALBUMS_PER_PAGE = 8
+        self.TRACKS_PER_PAGE = 10
+        self.PLAYLISTS_PER_PAGE = 6
+        self.API_FETCH_LIMIT = 50  # Fetch 50 at a time from API
+        # Track if more results might be available
+        self.albums_has_more = True
+        self.tracks_has_more = True
+        self.playlists_has_more = True
+        
         # Build UI
         self._build_ui()
         
         # Start auth
         self.after(500, self._authenticate)
+    
+    def _load_image_async(self, url, size, callback, cache_key=None):
+        """Load an image asynchronously with caching and thread pool"""
+        if not url:
+            return
+        
+        cache_key = cache_key or f"{url}_{size[0]}x{size[1]}"
+        
+        # Check cache first
+        if cache_key in self._image_cache:
+            # Move to end of order (most recently used)
+            if cache_key in self._image_cache_order:
+                self._image_cache_order.remove(cache_key)
+            self._image_cache_order.append(cache_key)
+            ctk_img = self._image_cache[cache_key]
+            self.after(0, lambda: callback(ctk_img))
+            return
+        
+        def fetch_image():
+            try:
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200:
+                    img = Image.open(BytesIO(resp.content))
+                    img = img.resize(size, Image.Resampling.LANCZOS)
+                    ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=size)
+                    
+                    # Cache the image
+                    self._image_cache[cache_key] = ctk_img
+                    self._image_cache_order.append(cache_key)
+                    
+                    # Evict oldest if over limit
+                    while len(self._image_cache_order) > self._max_cached_images:
+                        oldest = self._image_cache_order.pop(0)
+                        if oldest in self._image_cache:
+                            del self._image_cache[oldest]
+                    
+                    self.after(0, lambda: callback(ctk_img))
+            except Exception:
+                pass  # Silently fail for images
+        
+        # Submit to thread pool instead of creating new thread
+        self._image_executor.submit(fetch_image)
     
     def _build_ui(self):
         """Build the main UI"""
@@ -187,6 +254,15 @@ class TidalMDLApp(ctk.CTk):
             command=self._do_search
         ).pack(side="right")
         
+        # My Playlists button
+        ctk.CTkButton(
+            header, text="My Playlists", width=110, height=45,
+            fg_color=COLORS["bg_light"], hover_color=COLORS["accent"],
+            text_color=COLORS["text"],
+            font=ctk.CTkFont(size=13),
+            command=self._load_my_playlists
+        ).pack(side="right", padx=(0, 10))
+        
         # Results
         self.results_frame = ctk.CTkScrollableFrame(
             view, fg_color="transparent",
@@ -197,9 +273,10 @@ class TidalMDLApp(ctk.CTk):
         # Placeholder
         self.search_placeholder = ctk.CTkLabel(
             self.results_frame,
-            text="Search for music above",
+            text="Search for music above\nor click 'My Playlists' for your personal playlists",
             font=ctk.CTkFont(size=16),
-            text_color=COLORS["subtext"]
+            text_color=COLORS["subtext"],
+            justify="center"
         )
         self.search_placeholder.pack(pady=100)
         
@@ -288,6 +365,9 @@ class TidalMDLApp(ctk.CTk):
         """Create settings view"""
         view = ctk.CTkFrame(self.content, fg_color="transparent")
         
+        # Store settings widgets for saving
+        self.settings_widgets = {}
+        
         # Header
         ctk.CTkLabel(
             view, text="Settings",
@@ -301,28 +381,49 @@ class TidalMDLApp(ctk.CTk):
         
         # Quality section
         self._add_section(scroll, "Quality")
-        self._add_option(scroll, "Download Quality", 
-                        ["HI_RES", "LOSSLESS", "HIGH", "NORMAL"], "HI_RES")
+        self.settings_widgets["download_quality"] = self._add_option(
+            scroll, "Download Quality", 
+            ["HI_RES", "LOSSLESS", "HIGH", "NORMAL"], 
+            self._quality_to_str(self.config.download_quality)
+        )
         
         # Download section
         self._add_section(scroll, "Downloads")
-        self._add_folder_option(scroll, "Download Folder", str(self.config.download_folder))
-        self._add_text_option(scroll, "Max Concurrent", str(self.config.max_concurrent_downloads))
+        self.settings_widgets["download_folder"] = self._add_folder_option(
+            scroll, "Download Folder", str(self.config.download_folder)
+        )
+        self.settings_widgets["max_concurrent"] = self._add_text_option(
+            scroll, "Max Concurrent", str(self.config.max_concurrent_downloads)
+        )
         
         # Folder Templates section
         self._add_section(scroll, "Folder & File Templates")
-        self._add_text_option(scroll, "Album Folder", self.config.album_folder_template,
-                             hint="{artist}, {album}, {year}, {quality}")
-        self._add_text_option(scroll, "Track Filename", self.config.track_file_template,
-                             hint="{track_number}, {title}, {artist}")
-        self._add_text_option(scroll, "Album Art Filename", self.config.album_art_filename)
+        self.settings_widgets["album_folder_template"] = self._add_text_option(
+            scroll, "Album Folder", self.config.album_folder_template,
+            hint="{artist}, {album}, {year}, {quality}"
+        )
+        self.settings_widgets["track_file_template"] = self._add_text_option(
+            scroll, "Track Filename", self.config.track_file_template,
+            hint="{track_number}, {title}, {artist}"
+        )
+        self.settings_widgets["album_art_filename"] = self._add_text_option(
+            scroll, "Album Art Filename", self.config.album_art_filename
+        )
         
         # Metadata section
         self._add_section(scroll, "Metadata")
-        self._add_toggle(scroll, "Embed Album Art", self.config.embed_album_art)
-        self._add_toggle(scroll, "Save Album Art", self.config.save_album_art)
-        self._add_toggle(scroll, "Embed Lyrics", self.config.embed_lyrics)
-        self._add_toggle(scroll, "Skip Existing Files", self.config.skip_existing)
+        self.settings_widgets["embed_album_art"] = self._add_toggle(
+            scroll, "Embed Album Art", self.config.embed_album_art
+        )
+        self.settings_widgets["save_album_art"] = self._add_toggle(
+            scroll, "Save Album Art", self.config.save_album_art
+        )
+        self.settings_widgets["embed_lyrics"] = self._add_toggle(
+            scroll, "Embed Lyrics", self.config.embed_lyrics
+        )
+        self.settings_widgets["skip_existing"] = self._add_toggle(
+            scroll, "Skip Existing Files", self.config.skip_existing
+        )
         
         # Save button
         ctk.CTkButton(
@@ -335,6 +436,17 @@ class TidalMDLApp(ctk.CTk):
         
         self.views["settings"] = view
     
+    def _quality_to_str(self, quality):
+        """Convert quality enum to string"""
+        import tidalapi
+        quality_map = {
+            tidalapi.Quality.low_96k: "NORMAL",
+            tidalapi.Quality.low_320k: "HIGH",
+            tidalapi.Quality.high_lossless: "LOSSLESS",
+            tidalapi.Quality.hi_res_lossless: "HI_RES",
+        }
+        return quality_map.get(quality, "LOSSLESS")
+    
     def _add_section(self, parent, title):
         """Add a section header"""
         ctk.CTkLabel(
@@ -344,20 +456,23 @@ class TidalMDLApp(ctk.CTk):
         ).pack(anchor="w", pady=(20, 10))
     
     def _add_option(self, parent, label, options, default):
-        """Add a dropdown option"""
+        """Add a dropdown option, returns the option menu widget"""
         frame = ctk.CTkFrame(parent, fg_color=COLORS["bg_medium"], corner_radius=8)
         frame.pack(fill="x", pady=3)
         
         ctk.CTkLabel(frame, text=label, font=ctk.CTkFont(size=13)).pack(side="left", padx=15, pady=12)
-        ctk.CTkOptionMenu(
+        option_menu = ctk.CTkOptionMenu(
             frame, values=options, width=150,
             fg_color=COLORS["bg_light"],
             button_color=COLORS["accent"],
             button_hover_color=COLORS["accent_hover"]
-        ).pack(side="right", padx=15, pady=12)
+        )
+        option_menu.set(default)
+        option_menu.pack(side="right", padx=15, pady=12)
+        return option_menu
     
     def _add_text_option(self, parent, label, default, hint=None):
-        """Add a text input option with optional hint"""
+        """Add a text input option, returns the entry widget"""
         frame = ctk.CTkFrame(parent, fg_color=COLORS["bg_medium"], corner_radius=8)
         frame.pack(fill="x", pady=3)
         
@@ -377,9 +492,10 @@ class TidalMDLApp(ctk.CTk):
         entry = ctk.CTkEntry(frame, width=250, fg_color=COLORS["bg_light"])
         entry.insert(0, default)
         entry.pack(side="right", padx=15, pady=10)
+        return entry
     
     def _add_toggle(self, parent, label, default):
-        """Add a toggle option"""
+        """Add a toggle option, returns the switch widget"""
         frame = ctk.CTkFrame(parent, fg_color=COLORS["bg_medium"], corner_radius=8)
         frame.pack(fill="x", pady=3)
         
@@ -388,9 +504,10 @@ class TidalMDLApp(ctk.CTk):
         if default:
             switch.select()
         switch.pack(side="right", padx=15, pady=12)
+        return switch
     
     def _add_folder_option(self, parent, label, default):
-        """Add a folder picker option with browse button"""
+        """Add a folder picker option, returns the entry widget"""
         from tkinter import filedialog
         
         frame = ctk.CTkFrame(parent, fg_color=COLORS["bg_medium"], corner_radius=8)
@@ -420,6 +537,8 @@ class TidalMDLApp(ctk.CTk):
             font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"),
             command=browse
         ).pack(side="right", padx=5, pady=12)
+        
+        return entry
     
     def _show_view(self, name):
         """Show a view"""
@@ -481,6 +600,16 @@ class TidalMDLApp(ctk.CTk):
         if not query or not self.session:
             return
         
+        # Reset pagination and lazy loading state
+        self.search_query = query
+        self.albums_page = 0
+        self.tracks_page = 0
+        self.playlists_page = 0
+        self.albums_has_more = True
+        self.tracks_has_more = True
+        self.playlists_has_more = True
+        self.search_results = SearchResult([], [], [], [], [])  # Empty result container
+        
         # Clear results
         for w in self.results_frame.winfo_children():
             w.destroy()
@@ -494,7 +623,12 @@ class TidalMDLApp(ctk.CTk):
         
         def search_thread():
             try:
-                results = search(self.session, query)
+                results = search(self.session, query, limit=self.API_FETCH_LIMIT)
+                # Check if we got less than the limit (meaning no more results)
+                self.albums_has_more = len(results.albums) >= self.API_FETCH_LIMIT
+                self.tracks_has_more = len(results.tracks) >= self.API_FETCH_LIMIT
+                self.playlists_has_more = len(results.playlists) >= self.API_FETCH_LIMIT
+                self.search_results = results
                 self.after(0, lambda: self._display_results(results))
             except Exception as e:
                 logger.exception("Search error")
@@ -502,46 +636,501 @@ class TidalMDLApp(ctk.CTk):
         
         threading.Thread(target=search_thread, daemon=True).start()
     
-    def _display_results(self, results):
-        """Display search results"""
+    def _load_my_playlists(self):
+        """Load user's personal playlists"""
+        if not self.session:
+            self._show_toast("Not connected", COLORS["red"])
+            return
+        
+        # Reset state
+        self.playlists_page = 0
+        self.playlists_has_more = False  # User playlists are loaded all at once
+        
+        # Clear results
         for w in self.results_frame.winfo_children():
             w.destroy()
         
-        if not results.albums and not results.tracks:
+        # Show loading
+        loading = ctk.CTkLabel(
+            self.results_frame, text="Loading your playlists...",
+            font=ctk.CTkFont(size=16), text_color=COLORS["subtext"]
+        )
+        loading.pack(pady=100)
+        
+        def load_thread():
+            try:
+                # Get logged in user and their playlists
+                user = self.session.user
+                
+                # Try to get all playlists (including favorites)
+                all_playlists = []
+                try:
+                    # Get user's own playlists
+                    own_playlists = list(user.playlists())
+                    all_playlists.extend(own_playlists)
+                except Exception as e:
+                    logger.warning(f"Could not load own playlists: {e}")
+                
+                try:
+                    # Get favorite playlists too
+                    fav_playlists = list(user.playlist_and_favorite_playlists())
+                    # Add any that aren't already in the list
+                    existing_ids = {getattr(p, 'id', None) for p in all_playlists}
+                    for p in fav_playlists:
+                        if getattr(p, 'id', None) not in existing_ids:
+                            all_playlists.append(p)
+                except Exception as e:
+                    logger.warning(f"Could not load favorite playlists: {e}")
+                
+                # Create a pseudo SearchResult with only playlists
+                results = SearchResult(
+                    tracks=[],
+                    albums=[],
+                    artists=[],
+                    playlists=all_playlists,
+                    videos=[]
+                )
+                self.search_results = results
+                self.after(0, lambda: self._display_my_playlists(all_playlists))
+            except Exception as e:
+                logger.exception("Error loading playlists")
+                self.after(0, lambda: self._show_error(f"Failed to load playlists: {e}"))
+        
+        threading.Thread(target=load_thread, daemon=True).start()
+    
+    def _display_my_playlists(self, playlists):
+        """Display user's personal playlists"""
+        for w in self.results_frame.winfo_children():
+            w.destroy()
+        
+        if not playlists:
+            ctk.CTkLabel(
+                self.results_frame, text="No playlists found",
+                font=ctk.CTkFont(size=16), text_color=COLORS["subtext"]
+            ).pack(pady=100)
+            return
+        
+        # Header
+        ctk.CTkLabel(
+            self.results_frame, text=f"My Playlists ({len(playlists)})",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=18, weight="bold"),
+            text_color=COLORS["text"]
+        ).pack(anchor="w", pady=(0, 15))
+        
+        # Separate by public/private
+        public_playlists = [p for p in playlists if getattr(p, 'public', False)]
+        private_playlists = [p for p in playlists if not getattr(p, 'public', False)]
+        
+        # Display private playlists first (user's own)
+        if private_playlists:
+            ctk.CTkLabel(
+                self.results_frame, text=f"Private ({len(private_playlists)})",
+                font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+                text_color=COLORS["subtext"]
+            ).pack(anchor="w", pady=(5, 3))
+            for playlist in private_playlists:
+                self._create_playlist_row(playlist, is_public=False)
+        
+        # Display public/favorited playlists
+        if public_playlists:
+            ctk.CTkLabel(
+                self.results_frame, text=f"Public/Favorited ({len(public_playlists)})",
+                font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+                text_color=COLORS["subtext"]
+            ).pack(anchor="w", pady=(15, 3))
+            for playlist in public_playlists:
+                self._create_playlist_row(playlist, is_public=True)
+    
+    def _display_results(self, results):
+        """Display search results with pagination"""
+        for w in self.results_frame.winfo_children():
+            w.destroy()
+        
+        if not results.albums and not results.tracks and not results.playlists:
             ctk.CTkLabel(
                 self.results_frame, text="No results found",
                 font=ctk.CTkFont(size=16), text_color=COLORS["subtext"]
             ).pack(pady=100)
             return
         
-        # Albums
+        # Albums section
         if results.albums:
-            ctk.CTkLabel(
-                self.results_frame,
-                text=f"Albums ({len(results.albums)})",
-                font=ctk.CTkFont(size=18, weight="bold"),
-                text_color=COLORS["text"]
-            ).pack(anchor="w", pady=(0, 15))
-            
-            albums_grid = ctk.CTkFrame(self.results_frame, fg_color="transparent")
-            albums_grid.pack(fill="x", pady=(0, 30))
-            
-            for i, album in enumerate(results.albums[:8]):
-                col = i % 4
-                row = i // 4
-                self._create_album_card(albums_grid, album, row, col)
+            self._display_albums_section(results.albums)
         
-        # Tracks
+        # Playlists section
+        if results.playlists:
+            self._display_playlists_section(results.playlists)
+        
+        # Tracks section
         if results.tracks:
-            ctk.CTkLabel(
-                self.results_frame,
-                text=f"Tracks ({len(results.tracks)})",
-                font=ctk.CTkFont(size=18, weight="bold"),
-                text_color=COLORS["text"]
-            ).pack(anchor="w", pady=(10, 15))
+            self._display_tracks_section(results.tracks)
+    
+    def _display_albums_section(self, albums):
+        """Display albums with pagination"""
+        total = len(albums)
+        start = self.albums_page * self.ALBUMS_PER_PAGE
+        end = min(start + self.ALBUMS_PER_PAGE, total)
+        page_albums = albums[start:end]
+        total_pages = (total + self.ALBUMS_PER_PAGE - 1) // self.ALBUMS_PER_PAGE
+        
+        # Header with pagination
+        header = ctk.CTkFrame(self.results_frame, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 10))
+        
+        # Show "+" if more results available from API
+        count_text = f"Albums ({total}+)" if self.albums_has_more else f"Albums ({total})"
+        ctk.CTkLabel(
+            header, text=count_text,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=18, weight="bold"),
+            text_color=COLORS["text"]
+        ).pack(side="left")
+        
+        # Show pagination if there are multiple pages OR more can be loaded
+        if total_pages > 1 or self.albums_has_more:
+            nav = ctk.CTkFrame(header, fg_color="transparent")
+            nav.pack(side="right")
             
-            for i, track in enumerate(results.tracks[:15]):
-                self._create_track_row(self.results_frame, track, i+1)
+            ctk.CTkButton(
+                nav, text="<", width=30, height=28,
+                fg_color=COLORS["bg_light"], hover_color=COLORS["accent"],
+                command=lambda: self._change_albums_page(-1),
+                state="normal" if self.albums_page > 0 else "disabled"
+            ).pack(side="left", padx=2)
+            
+            # Page indicator (show ? for unknown total when more available)
+            page_text = f"{self.albums_page + 1}/?" if self.albums_has_more else f"{self.albums_page + 1}/{total_pages}"
+            ctk.CTkLabel(
+                nav, text=page_text,
+                font=ctk.CTkFont(size=11), text_color=COLORS["subtext"]
+            ).pack(side="left", padx=8)
+            
+            # Enable next button if on last page but more can be fetched
+            can_go_next = self.albums_page < total_pages - 1 or self.albums_has_more
+            ctk.CTkButton(
+                nav, text=">", width=30, height=28,
+                fg_color=COLORS["bg_light"], hover_color=COLORS["accent"],
+                command=lambda: self._change_albums_page(1),
+                state="normal" if can_go_next else "disabled"
+            ).pack(side="left", padx=2)
+        
+        # Responsive album grid
+        albums_grid = ctk.CTkFrame(self.results_frame, fg_color="transparent")
+        albums_grid.pack(fill="x", pady=(0, 25))
+        
+        # Configure grid columns for flexibility
+        for i in range(4):
+            albums_grid.grid_columnconfigure(i, weight=1, uniform="album")
+        
+        for i, album in enumerate(page_albums):
+            col = i % 4
+            row = i // 4
+            self._create_album_card(albums_grid, album, row, col)
+    
+    def _display_playlists_section(self, playlists):
+        """Display playlists split into Public and Private with pagination"""
+        # Separate public and private playlists
+        public_playlists = [p for p in playlists if getattr(p, 'public', True)]
+        private_playlists = [p for p in playlists if not getattr(p, 'public', True)]
+        
+        total = len(playlists)
+        start = self.playlists_page * self.PLAYLISTS_PER_PAGE
+        end = min(start + self.PLAYLISTS_PER_PAGE, total)
+        total_pages = (total + self.PLAYLISTS_PER_PAGE - 1) // self.PLAYLISTS_PER_PAGE
+        
+        # Header with pagination
+        header = ctk.CTkFrame(self.results_frame, fg_color="transparent")
+        header.pack(fill="x", pady=(15, 10))
+        
+        count_text = f"Playlists ({total}+)" if self.playlists_has_more else f"Playlists ({total})"
+        ctk.CTkLabel(
+            header, text=count_text,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=18, weight="bold"),
+            text_color=COLORS["text"]
+        ).pack(side="left")
+        
+        if total_pages > 1 or self.playlists_has_more:
+            nav = ctk.CTkFrame(header, fg_color="transparent")
+            nav.pack(side="right")
+            
+            ctk.CTkButton(
+                nav, text="<", width=30, height=28,
+                fg_color=COLORS["bg_light"], hover_color=COLORS["accent"],
+                command=lambda: self._change_playlists_page(-1),
+                state="normal" if self.playlists_page > 0 else "disabled"
+            ).pack(side="left", padx=2)
+            
+            page_text = f"{self.playlists_page + 1}/?" if self.playlists_has_more else f"{self.playlists_page + 1}/{total_pages}"
+            ctk.CTkLabel(
+                nav, text=page_text,
+                font=ctk.CTkFont(size=11), text_color=COLORS["subtext"]
+            ).pack(side="left", padx=8)
+            
+            can_go_next = self.playlists_page < total_pages - 1 or self.playlists_has_more
+            ctk.CTkButton(
+                nav, text=">", width=30, height=28,
+                fg_color=COLORS["bg_light"], hover_color=COLORS["accent"],
+                command=lambda: self._change_playlists_page(1),
+                state="normal" if can_go_next else "disabled"
+            ).pack(side="left", padx=2)
+        
+        # Show playlists for current page
+        page_playlists = playlists[start:end]
+        
+        # Group page playlists by public/private
+        page_public = [p for p in page_playlists if getattr(p, 'public', True)]
+        page_private = [p for p in page_playlists if not getattr(p, 'public', True)]
+        
+        # Display public playlists
+        if page_public:
+            ctk.CTkLabel(
+                self.results_frame, text="Public Playlists",
+                font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+                text_color=COLORS["subtext"]
+            ).pack(anchor="w", pady=(5, 3))
+            for playlist in page_public:
+                self._create_playlist_row(playlist, is_public=True)
+        
+        # Display private playlists
+        if page_private:
+            ctk.CTkLabel(
+                self.results_frame, text="Private Playlists",
+                font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+                text_color=COLORS["subtext"]
+            ).pack(anchor="w", pady=(10, 3))
+            for playlist in page_private:
+                self._create_playlist_row(playlist, is_public=False)
+    
+    def _display_tracks_section(self, tracks):
+        """Display tracks with pagination"""
+        total = len(tracks)
+        start = self.tracks_page * self.TRACKS_PER_PAGE
+        end = min(start + self.TRACKS_PER_PAGE, total)
+        page_tracks = tracks[start:end]
+        total_pages = (total + self.TRACKS_PER_PAGE - 1) // self.TRACKS_PER_PAGE
+        
+        # Header with pagination
+        header = ctk.CTkFrame(self.results_frame, fg_color="transparent")
+        header.pack(fill="x", pady=(15, 10))
+        
+        count_text = f"Tracks ({total}+)" if self.tracks_has_more else f"Tracks ({total})"
+        ctk.CTkLabel(
+            header, text=count_text,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=18, weight="bold"),
+            text_color=COLORS["text"]
+        ).pack(side="left")
+        
+        if total_pages > 1 or self.tracks_has_more:
+            nav = ctk.CTkFrame(header, fg_color="transparent")
+            nav.pack(side="right")
+            
+            ctk.CTkButton(
+                nav, text="<", width=30, height=28,
+                fg_color=COLORS["bg_light"], hover_color=COLORS["accent"],
+                command=lambda: self._change_tracks_page(-1),
+                state="normal" if self.tracks_page > 0 else "disabled"
+            ).pack(side="left", padx=2)
+            
+            page_text = f"{self.tracks_page + 1}/?" if self.tracks_has_more else f"{self.tracks_page + 1}/{total_pages}"
+            ctk.CTkLabel(
+                nav, text=page_text,
+                font=ctk.CTkFont(size=11), text_color=COLORS["subtext"]
+            ).pack(side="left", padx=8)
+            
+            can_go_next = self.tracks_page < total_pages - 1 or self.tracks_has_more
+            ctk.CTkButton(
+                nav, text=">", width=30, height=28,
+                fg_color=COLORS["bg_light"], hover_color=COLORS["accent"],
+                command=lambda: self._change_tracks_page(1),
+                state="normal" if can_go_next else "disabled"
+            ).pack(side="left", padx=2)
+        
+        # Track rows
+        for i, track in enumerate(page_tracks):
+            self._create_track_row(self.results_frame, track, start + i + 1)
+    
+    def _change_albums_page(self, delta):
+        """Change albums page and fetch more if needed"""
+        new_page = self.albums_page + delta
+        needed_items = (new_page + 1) * self.ALBUMS_PER_PAGE
+        
+        # Check if we need to fetch more from API
+        if needed_items > len(self.search_results.albums) and self.albums_has_more:
+            self._fetch_more_albums(new_page)
+        else:
+            self.albums_page = new_page
+            if self.search_results:
+                self._display_results(self.search_results)
+    
+    def _fetch_more_albums(self, target_page):
+        """Fetch more albums from API"""
+        def fetch_thread():
+            try:
+                offset = len(self.search_results.albums)
+                more = search(self.session, self.search_query, SearchType.ALBUM, 
+                             limit=self.API_FETCH_LIMIT, offset=offset)
+                if len(more.albums) < self.API_FETCH_LIMIT:
+                    self.albums_has_more = False
+                # Append to existing results
+                self.search_results.albums.extend(more.albums)
+                self.albums_page = target_page
+                self.after(0, lambda: self._display_results(self.search_results))
+            except Exception as e:
+                logger.exception("Fetch more albums error")
+        threading.Thread(target=fetch_thread, daemon=True).start()
+    
+    def _change_playlists_page(self, delta):
+        """Change playlists page and fetch more if needed"""
+        new_page = self.playlists_page + delta
+        needed_items = (new_page + 1) * self.PLAYLISTS_PER_PAGE
+        
+        if needed_items > len(self.search_results.playlists) and self.playlists_has_more:
+            self._fetch_more_playlists(new_page)
+        else:
+            self.playlists_page = new_page
+            if self.search_results:
+                self._display_results(self.search_results)
+    
+    def _fetch_more_playlists(self, target_page):
+        """Fetch more playlists from API"""
+        def fetch_thread():
+            try:
+                offset = len(self.search_results.playlists)
+                more = search(self.session, self.search_query, SearchType.PLAYLIST,
+                             limit=self.API_FETCH_LIMIT, offset=offset)
+                if len(more.playlists) < self.API_FETCH_LIMIT:
+                    self.playlists_has_more = False
+                self.search_results.playlists.extend(more.playlists)
+                self.playlists_page = target_page
+                self.after(0, lambda: self._display_results(self.search_results))
+            except Exception as e:
+                logger.exception("Fetch more playlists error")
+        threading.Thread(target=fetch_thread, daemon=True).start()
+    
+    def _change_tracks_page(self, delta):
+        """Change tracks page and fetch more if needed"""
+        new_page = self.tracks_page + delta
+        needed_items = (new_page + 1) * self.TRACKS_PER_PAGE
+        
+        if needed_items > len(self.search_results.tracks) and self.tracks_has_more:
+            self._fetch_more_tracks(new_page)
+        else:
+            self.tracks_page = new_page
+            if self.search_results:
+                self._display_results(self.search_results)
+    
+    def _fetch_more_tracks(self, target_page):
+        """Fetch more tracks from API"""
+        def fetch_thread():
+            try:
+                offset = len(self.search_results.tracks)
+                more = search(self.session, self.search_query, SearchType.TRACK,
+                             limit=self.API_FETCH_LIMIT, offset=offset)
+                if len(more.tracks) < self.API_FETCH_LIMIT:
+                    self.tracks_has_more = False
+                self.search_results.tracks.extend(more.tracks)
+                self.tracks_page = target_page
+                self.after(0, lambda: self._display_results(self.search_results))
+            except Exception as e:
+                logger.exception("Fetch more tracks error")
+        threading.Thread(target=fetch_thread, daemon=True).start()
+    
+    def _create_playlist_row(self, playlist, is_public=True):
+        """Create a playlist row with download options"""
+        row = ctk.CTkFrame(self.results_frame, fg_color=COLORS["bg_medium"], corner_radius=8, height=70)
+        row.pack(fill="x", pady=3)
+        row.pack_propagate(False)
+        
+        # Playlist icon
+        icon_label = ctk.CTkLabel(
+            row, text="", width=55, height=55,
+            fg_color=COLORS["bg_light"], corner_radius=6
+        )
+        icon_label.pack(side="left", padx=(10, 10), pady=7)
+        
+        # Load playlist image with caching (try multiple image methods)
+        def get_playlist_url():
+            try:
+                if hasattr(playlist, 'image') and callable(playlist.image):
+                    try:
+                        return playlist.image(320)
+                    except:
+                        pass
+                if hasattr(playlist, 'square_picture'):
+                    try:
+                        return playlist.square_picture(320)
+                    except:
+                        pass
+                if hasattr(playlist, 'picture'):
+                    try:
+                        return playlist.picture(320)
+                    except:
+                        pass
+            except:
+                pass
+            return None
+        
+        url = get_playlist_url()
+        if url:
+            playlist_id = getattr(playlist, 'id', None) or getattr(playlist, 'uuid', 'unknown')
+            self._load_image_async(
+                url, (55, 55),
+                lambda img: icon_label.configure(image=img),
+                cache_key=f"playlist_{playlist_id}_55"
+            )
+        
+        # Info
+        info = ctk.CTkFrame(row, fg_color="transparent")
+        info.pack(side="left", fill="both", expand=True, padx=5, pady=8)
+        
+        # Playlist name with public/private badge
+        name_frame = ctk.CTkFrame(info, fg_color="transparent")
+        name_frame.pack(anchor="w")
+        
+        name = playlist.name[:35] + "..." if len(playlist.name) > 35 else playlist.name
+        ctk.CTkLabel(
+            name_frame, text=name,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, weight="bold"),
+            text_color=COLORS["text"]
+        ).pack(side="left")
+        
+        # Public/Private badge
+        badge_text = "Public" if is_public else "Private"
+        badge_color = COLORS["green"] if is_public else COLORS["subtext"]
+        ctk.CTkLabel(
+            name_frame, text=f"  [{badge_text}]",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=9),
+            text_color=badge_color
+        ).pack(side="left")
+        
+        creator = playlist.creator.name if playlist.creator else "Tidal"
+        tracks_count = playlist.num_tracks if playlist.num_tracks else "?"
+        ctk.CTkLabel(
+            info, text=f"by {creator}  •  {tracks_count} tracks",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=10),
+            text_color=COLORS["subtext"], anchor="w"
+        ).pack(anchor="w")
+        
+        # Download buttons
+        btn_frame = ctk.CTkFrame(row, fg_color="transparent")
+        btn_frame.pack(side="right", padx=10, pady=8)
+        
+        # Download as one folder (playlist name)
+        ctk.CTkButton(
+            btn_frame, text="As One", width=70, height=30,
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"],
+            font=ctk.CTkFont(size=11),
+            command=lambda p=playlist: self._download_playlist(p, as_album=True)
+        ).pack(side="left", padx=3)
+        
+        # Download separately (by original artist/album)
+        ctk.CTkButton(
+            btn_frame, text="Separate", width=70, height=30,
+            fg_color=COLORS["bg_light"], hover_color=COLORS["accent"],
+            text_color=COLORS["text"],
+            font=ctk.CTkFont(size=11),
+            command=lambda p=playlist: self._download_playlist(p, as_album=False)
+        ).pack(side="left", padx=3)
     
     def _create_album_card(self, parent, album, row, col):
         """Create an album card"""
@@ -556,20 +1145,14 @@ class TidalMDLApp(ctk.CTk):
         )
         art.pack(padx=15, pady=(15, 10))
         
-        # Load art async
-        def load_art():
-            try:
-                url = album.image(320)
-                if url:
-                    resp = requests.get(url, timeout=10)
-                    if resp.status_code == 200:
-                        img = Image.open(BytesIO(resp.content))
-                        img = img.resize((160, 160), Image.Resampling.LANCZOS)
-                        ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(160, 160))
-                        self.after(0, lambda: art.configure(image=ctk_img, text=""))
-            except:
-                pass
-        threading.Thread(target=load_art, daemon=True).start()
+        # Load art async with caching
+        url = album.image(320) if hasattr(album, 'image') else None
+        if url:
+            self._load_image_async(
+                url, (160, 160),
+                lambda img: art.configure(image=img, text=""),
+                cache_key=f"album_{album.id}_160"
+            )
         
         # Title
         title = album.name[:22] + "..." if len(album.name) > 22 else album.name
@@ -609,22 +1192,16 @@ class TidalMDLApp(ctk.CTk):
         )
         thumb_label.pack(side="left", padx=(10, 10), pady=5)
         
-        # Load album art async
+        # Load album art async with caching
         album = getattr(track, 'album', None)
         if album:
-            def load_thumb():
-                try:
-                    url = album.image(160) if hasattr(album, 'image') else None
-                    if url:
-                        resp = requests.get(url, timeout=10)
-                        if resp.status_code == 200:
-                            img = Image.open(BytesIO(resp.content))
-                            img = img.resize((50, 50), Image.Resampling.LANCZOS)
-                            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(50, 50))
-                            self.after(0, lambda: thumb_label.configure(image=ctk_img))
-                except:
-                    pass
-            threading.Thread(target=load_thumb, daemon=True).start()
+            url = album.image(160) if hasattr(album, 'image') else None
+            if url:
+                self._load_image_async(
+                    url, (50, 50),
+                    lambda img: thumb_label.configure(image=img),
+                    cache_key=f"album_{getattr(album, 'id', 'unknown')}_50"
+                )
         
         # Info section
         info = ctk.CTkFrame(row, fg_color="transparent")
@@ -707,6 +1284,46 @@ class TidalMDLApp(ctk.CTk):
         task = create_track_task(self.config, track)
         self.download_queue.add_task(task)
         self._on_tasks_added([task])
+    
+    def _download_playlist(self, playlist, as_album=True):
+        """Download playlist with option for folder organization"""
+        if not self.download_queue:
+            self._show_toast("Not connected", COLORS["red"])
+            return
+        
+        def dl_thread():
+            try:
+                from src.downloader import create_playlist_tasks
+                
+                if as_album:
+                    # Download as "Various Artists - PlaylistName" album
+                    tasks = create_playlist_tasks(
+                        self.config, self.session, playlist, 
+                        as_compilation=True
+                    )
+                    msg = f"Added {len(tasks)} tracks as compilation"
+                else:
+                    # Download split by original artist/album
+                    tasks = create_playlist_tasks(
+                        self.config, self.session, playlist,
+                        as_compilation=False
+                    )
+                    msg = f"Added {len(tasks)} tracks by artist"
+                
+                self.download_queue.add_tasks(tasks)
+                self.after(0, lambda: self._on_tasks_added_msg(tasks, msg))
+            except Exception as e:
+                logger.exception("Playlist download error")
+                self.after(0, lambda: self._show_toast(f"Error: {e}", COLORS["red"]))
+        
+        threading.Thread(target=dl_thread, daemon=True).start()
+    
+    def _on_tasks_added_msg(self, tasks, msg):
+        """Called when tasks are added with custom message"""
+        self._show_toast(msg, COLORS["green"])
+        self._refresh_downloads_ui()
+        if self.download_queue and not self.download_queue.is_running:
+            self._start_downloads()
     
     def _on_tasks_added(self, tasks):
         """Called when tasks are added to the queue"""
@@ -820,25 +1437,23 @@ class TidalMDLApp(ctk.CTk):
         )
         thumb_label.pack(side="left", padx=(0, 10))
         
-        # Load album art async
-        def load_thumb():
-            try:
-                url = album.image(160)
-                if url:
-                    resp = requests.get(url, timeout=10)
-                    if resp.status_code == 200:
-                        img = Image.open(BytesIO(resp.content))
-                        img = img.resize((45, 45), Image.Resampling.LANCZOS)
-                        ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(45, 45))
-                        self.after(0, lambda: thumb_label.configure(image=ctk_img, text=""))
-            except:
-                pass
-        threading.Thread(target=load_thumb, daemon=True).start()
+        # Load album art async with caching
+        url = album.image(160) if hasattr(album, 'image') else None
+        if url:
+            self._load_image_async(
+                url, (45, 45),
+                lambda img: thumb_label.configure(image=img, text=""),
+                cache_key=f"album_{album.id}_45"
+            )
         
-        # Album name (also clickable to toggle)
-        album_name = album.name[:28] + "..." if len(album.name) > 28 else album.name
+        # Album name with artist (also clickable to toggle)
+        artist_name = album.artist.name if album.artist else "Unknown Artist"
+        album_title = album.name if album.name else "Unknown Album"
+        full_name = f"{artist_name} - {album_title}"
+        # Truncate if too long
+        display_name = full_name[:40] + "..." if len(full_name) > 40 else full_name
         name_label = ctk.CTkLabel(
-            info_row, text=album_name,
+            info_row, text=display_name,
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=COLORS["text"]
         )
@@ -1032,8 +1647,48 @@ class TidalMDLApp(ctk.CTk):
             self._refresh_downloads_ui()
     
     def _save_settings(self):
-        """Save settings"""
-        self._show_toast("Settings saved!", COLORS["green"])
+        """Save settings to config and .env file"""
+        try:
+            from pathlib import Path
+            from src.config import save_config
+            import tidalapi
+            
+            # Read values from widgets
+            quality_str = self.settings_widgets["download_quality"].get()
+            quality_map = {
+                "NORMAL": tidalapi.Quality.low_96k,
+                "HIGH": tidalapi.Quality.low_320k,
+                "LOSSLESS": tidalapi.Quality.high_lossless,
+                "HI_RES": tidalapi.Quality.hi_res_lossless,
+            }
+            
+            # Update config object
+            self.config.download_quality = quality_map.get(quality_str, tidalapi.Quality.high_lossless)
+            self.config.download_folder = Path(self.settings_widgets["download_folder"].get())
+            
+            try:
+                self.config.max_concurrent_downloads = int(self.settings_widgets["max_concurrent"].get())
+            except ValueError:
+                self.config.max_concurrent_downloads = 3
+            
+            self.config.album_folder_template = self.settings_widgets["album_folder_template"].get()
+            self.config.track_file_template = self.settings_widgets["track_file_template"].get()
+            self.config.album_art_filename = self.settings_widgets["album_art_filename"].get()
+            
+            self.config.embed_album_art = bool(self.settings_widgets["embed_album_art"].get())
+            self.config.save_album_art = bool(self.settings_widgets["save_album_art"].get())
+            self.config.embed_lyrics = bool(self.settings_widgets["embed_lyrics"].get())
+            self.config.skip_existing = bool(self.settings_widgets["skip_existing"].get())
+            
+            # Save to .env file
+            save_config(self.config, Path(".env"))
+            
+            self._show_toast("Settings saved!", COLORS["green"])
+            logger.info("Settings saved successfully")
+            
+        except Exception as e:
+            logger.exception("Error saving settings")
+            self._show_toast(f"Error saving: {e}", COLORS["red"])
     
     def _show_toast(self, message, color):
         """Show toast notification"""
@@ -1056,6 +1711,20 @@ def main():
     """Main entry point"""
     logger.info("Starting Tidal MDL GUI")
     app = TidalMDLApp()
+    
+    def on_closing():
+        """Cleanup on app close"""
+        try:
+            # Shutdown thread pool
+            app._image_executor.shutdown(wait=False)
+            # Clear image cache
+            app._image_cache.clear()
+            app._image_cache_order.clear()
+        except:
+            pass
+        app.destroy()
+    
+    app.protocol("WM_DELETE_WINDOW", on_closing)
     app.mainloop()
 
 

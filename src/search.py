@@ -39,7 +39,8 @@ def search(
     session: tidalapi.Session,
     query: str,
     search_type: SearchType = SearchType.ALL,
-    limit: int = 20
+    limit: int = 50,
+    offset: int = 0
 ) -> SearchResult:
     """
     Search Tidal for content
@@ -49,6 +50,7 @@ def search(
         query: Search query string
         search_type: Type of content to search for
         limit: Maximum number of results per category
+        offset: Offset for pagination
     
     Returns:
         SearchResult containing matching items
@@ -61,31 +63,31 @@ def search(
     
     if search_type in (SearchType.ALL, SearchType.TRACK):
         try:
-            tracks = session.search(query, models=[tidalapi.Track], limit=limit).get("tracks", [])
+            tracks = session.search(query, models=[tidalapi.Track], limit=limit, offset=offset).get("tracks", [])
         except Exception:
             tracks = []
     
     if search_type in (SearchType.ALL, SearchType.ALBUM):
         try:
-            albums = session.search(query, models=[tidalapi.Album], limit=limit).get("albums", [])
+            albums = session.search(query, models=[tidalapi.Album], limit=limit, offset=offset).get("albums", [])
         except Exception:
             albums = []
     
     if search_type in (SearchType.ALL, SearchType.ARTIST):
         try:
-            artists = session.search(query, models=[tidalapi.Artist], limit=limit).get("artists", [])
+            artists = session.search(query, models=[tidalapi.Artist], limit=limit, offset=offset).get("artists", [])
         except Exception:
             artists = []
     
     if search_type in (SearchType.ALL, SearchType.PLAYLIST):
         try:
-            playlists = session.search(query, models=[tidalapi.Playlist], limit=limit).get("playlists", [])
+            playlists = session.search(query, models=[tidalapi.Playlist], limit=limit, offset=offset).get("playlists", [])
         except Exception:
             playlists = []
     
     if search_type in (SearchType.ALL, SearchType.VIDEO):
         try:
-            videos = session.search(query, models=[tidalapi.Video], limit=limit).get("videos", [])
+            videos = session.search(query, models=[tidalapi.Video], limit=limit, offset=offset).get("videos", [])
         except Exception:
             videos = []
     
@@ -211,7 +213,7 @@ def display_playlists(playlists: List[tidalapi.Playlist], title: str = "Playlist
             playlist.name or "Unknown",
             creator,
             tracks,
-            str(playlist.uuid)
+            str(getattr(playlist, 'id', None) or getattr(playlist, 'uuid', 'unknown'))
         )
     
     console.print(table)
