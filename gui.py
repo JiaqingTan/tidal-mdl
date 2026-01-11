@@ -309,11 +309,20 @@ class TidalMDLApp(ctk.CTk):
         self._add_folder_option(scroll, "Download Folder", str(self.config.download_folder))
         self._add_text_option(scroll, "Max Concurrent", str(self.config.max_concurrent_downloads))
         
+        # Folder Templates section
+        self._add_section(scroll, "Folder & File Templates")
+        self._add_text_option(scroll, "Album Folder", self.config.album_folder_template,
+                             hint="{artist}, {album}, {year}, {quality}")
+        self._add_text_option(scroll, "Track Filename", self.config.track_file_template,
+                             hint="{track_number}, {title}, {artist}")
+        self._add_text_option(scroll, "Album Art Filename", self.config.album_art_filename)
+        
         # Metadata section
         self._add_section(scroll, "Metadata")
         self._add_toggle(scroll, "Embed Album Art", self.config.embed_album_art)
         self._add_toggle(scroll, "Save Album Art", self.config.save_album_art)
-        self._add_toggle(scroll, "Skip Existing", self.config.skip_existing)
+        self._add_toggle(scroll, "Embed Lyrics", self.config.embed_lyrics)
+        self._add_toggle(scroll, "Skip Existing Files", self.config.skip_existing)
         
         # Save button
         ctk.CTkButton(
@@ -347,15 +356,27 @@ class TidalMDLApp(ctk.CTk):
             button_hover_color=COLORS["accent_hover"]
         ).pack(side="right", padx=15, pady=12)
     
-    def _add_text_option(self, parent, label, default):
-        """Add a text input option"""
+    def _add_text_option(self, parent, label, default, hint=None):
+        """Add a text input option with optional hint"""
         frame = ctk.CTkFrame(parent, fg_color=COLORS["bg_medium"], corner_radius=8)
         frame.pack(fill="x", pady=3)
         
-        ctk.CTkLabel(frame, text=label, font=ctk.CTkFont(size=13)).pack(side="left", padx=15, pady=12)
-        entry = ctk.CTkEntry(frame, width=200, fg_color=COLORS["bg_light"])
+        # Label section
+        label_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        label_frame.pack(side="left", padx=15, pady=10)
+        
+        ctk.CTkLabel(label_frame, text=label, font=ctk.CTkFont(family=FONT_FAMILY, size=13)).pack(anchor="w")
+        
+        if hint:
+            ctk.CTkLabel(
+                label_frame, text=hint,
+                font=ctk.CTkFont(family=FONT_FAMILY, size=9),
+                text_color=COLORS["subtext"]
+            ).pack(anchor="w")
+        
+        entry = ctk.CTkEntry(frame, width=250, fg_color=COLORS["bg_light"])
         entry.insert(0, default)
-        entry.pack(side="right", padx=15, pady=12)
+        entry.pack(side="right", padx=15, pady=10)
     
     def _add_toggle(self, parent, label, default):
         """Add a toggle option"""
