@@ -576,39 +576,90 @@ class TidalMDLApp(ctk.CTk):
         ).pack(fill="x", padx=15, pady=(5, 15))
     
     def _create_track_row(self, parent, track, num):
-        """Create a track row"""
-        row = ctk.CTkFrame(parent, fg_color=COLORS["bg_medium"], corner_radius=8, height=45)
-        row.pack(fill="x", pady=2)
+        """Create a track row with artist, album, and thumbnail"""
+        row = ctk.CTkFrame(parent, fg_color=COLORS["bg_medium"], corner_radius=8, height=60)
+        row.pack(fill="x", pady=3)
         row.pack_propagate(False)
         
-        # Number
-        ctk.CTkLabel(
-            row, text=str(num).zfill(2), width=35,
-            font=ctk.CTkFont(size=12), text_color=COLORS["subtext"]
-        ).pack(side="left", padx=(15, 5))
+        # Album thumbnail placeholder
+        thumb_label = ctk.CTkLabel(
+            row, text="", width=50, height=50,
+            fg_color=COLORS["bg_light"], corner_radius=6
+        )
+        thumb_label.pack(side="left", padx=(10, 10), pady=5)
         
-        # Title
-        title = track.name[:45] + "..." if len(track.name) > 45 else track.name
+        # Load album art async
+        album = getattr(track, 'album', None)
+        if album:
+            def load_thumb():
+                try:
+                    url = album.image(160) if hasattr(album, 'image') else None
+                    if url:
+                        resp = requests.get(url, timeout=10)
+                        if resp.status_code == 200:
+                            img = Image.open(BytesIO(resp.content))
+                            img = img.resize((50, 50), Image.Resampling.LANCZOS)
+                            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(50, 50))
+                            self.after(0, lambda: thumb_label.configure(image=ctk_img))
+                except:
+                    pass
+            threading.Thread(target=load_thumb, daemon=True).start()
+        
+        # Info section
+        info = ctk.CTkFrame(row, fg_color="transparent")
+        info.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        
+        # Track number + Title
+        title_row = ctk.CTkFrame(info, fg_color="transparent")
+        title_row.pack(fill="x")
+        
         ctk.CTkLabel(
-            row, text=title,
-            font=ctk.CTkFont(size=13), text_color=COLORS["text"],
-            anchor="w"
-        ).pack(side="left", fill="x", expand=True, padx=5)
+            title_row, text=str(num).zfill(2), width=25,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11), text_color=COLORS["subtext"]
+        ).pack(side="left")
+        
+        title = track.name[:40] + "..." if len(track.name) > 40 else track.name
+        ctk.CTkLabel(
+            title_row, text=title,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12, weight="bold"), 
+            text_color=COLORS["text"], anchor="w"
+        ).pack(side="left", padx=(5, 0))
+        
+        # Artist + Album row
+        meta_row = ctk.CTkFrame(info, fg_color="transparent")
+        meta_row.pack(fill="x", pady=(2, 0))
+        
+        artist_name = track.artist.name if track.artist else "Unknown Artist"
+        artist_name = artist_name[:25] + "..." if len(artist_name) > 25 else artist_name
+        
+        album_name = album.name if album else "Unknown Album"
+        album_name = album_name[:25] + "..." if len(album_name) > 25 else album_name
+        
+        ctk.CTkLabel(
+            meta_row, text=f"{artist_name}  •  {album_name}",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=10), 
+            text_color=COLORS["subtext"], anchor="w"
+        ).pack(side="left")
+        
+        # Right side: Duration + Download button
+        right_frame = ctk.CTkFrame(row, fg_color="transparent")
+        right_frame.pack(side="right", padx=10, pady=5)
         
         # Duration
         dur = f"{track.duration // 60}:{track.duration % 60:02d}" if track.duration else "--:--"
         ctk.CTkLabel(
-            row, text=dur, width=50,
-            font=ctk.CTkFont(size=11), text_color=COLORS["subtext"]
-        ).pack(side="right", padx=10)
+            right_frame, text=dur, width=45,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=10), text_color=COLORS["subtext"]
+        ).pack(side="left", padx=(0, 10))
         
-        # Download
+        # Download button
         ctk.CTkButton(
-            row, text="+", width=35, height=30,
-            fg_color=COLORS["blue"], hover_color="#a8c8ff",
+            right_frame, text="+", width=35, height=30,
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
             text_color=COLORS["bg_dark"],
+            font=ctk.CTkFont(size=14, weight="bold"),
             command=lambda t=track: self._download_track(t)
-        ).pack(side="right", padx=5)
+        ).pack(side="right")
     
     def _download_album(self, album):
         """Download album"""
