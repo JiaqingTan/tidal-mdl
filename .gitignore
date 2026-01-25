@@ -1,7 +1,7 @@
 # Environment and config
 .env
 *.session
-tidal_session.json
+*session*.json
 
 # Python
 __pycache__/

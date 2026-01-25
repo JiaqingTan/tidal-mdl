@@ -70,6 +70,11 @@ class TidalMDLApp(ctk.CTk):
         self.download_queue = None
         self.expanded_albums = {}  # Track which albums are expanded (album_id -> bool)
         
+        # Widget tracking for incremental updates (prevents flashing)
+        self._download_widgets = {}  # task_id -> {frame, status_label, progress_bar, icon_label}
+        self._album_widgets = {}  # album_id -> {header, progress_bar, progress_label, thumb_label}
+        self._last_task_ids = set()  # Track task IDs from last refresh
+        
         # Image cache to prevent memory leaks and improve performance
         # LRU cache with max 100 images
         self._image_cache = {}
@@ -1334,13 +1339,9 @@ class TidalMDLApp(ctk.CTk):
             self._start_downloads()
     
     def _refresh_downloads_ui(self):
-        """Refresh the downloads list UI"""
+        """Refresh the downloads list UI with incremental updates to prevent flashing"""
         if not self.download_queue:
             return
-        
-        # Clear current list
-        for w in self.downloads_list.winfo_children():
-            w.destroy()
         
         # Get all tasks and deduplicate by ID (same task can be in queue and completed)
         all_tasks_dict = {}
@@ -1350,6 +1351,33 @@ class TidalMDLApp(ctk.CTk):
             all_tasks_dict[task.id] = task  # Completed takes precedence
         for task in self.download_queue.failed:
             all_tasks_dict[task.id] = task  # Failed takes precedence
+        
+        current_task_ids = set(all_tasks_dict.keys())
+        
+        # Check if we need a full rebuild (tasks added/removed or first load)
+        needs_rebuild = (
+            current_task_ids != self._last_task_ids or
+            not self.downloads_list.winfo_children()
+        )
+        
+        if needs_rebuild:
+            # Full rebuild only when structure changes
+            self._full_rebuild_downloads(all_tasks_dict)
+            self._last_task_ids = current_task_ids.copy()
+        else:
+            # Incremental update - just update status/progress
+            self._incremental_update_downloads(all_tasks_dict)
+        
+        # Update stats
+        self._update_stats()
+    
+    def _full_rebuild_downloads(self, all_tasks_dict):
+        """Full rebuild of downloads UI (only called when tasks are added/removed)"""
+        # Clear current list and widget tracking
+        for w in self.downloads_list.winfo_children():
+            w.destroy()
+        self._download_widgets.clear()
+        self._album_widgets.clear()
         
         all_tasks = list(all_tasks_dict.values())
         
@@ -1391,6 +1419,82 @@ class TidalMDLApp(ctk.CTk):
         # Show singles (if any without album)
         if singles:
             self._create_singles_group(singles)
+    
+    def _incremental_update_downloads(self, all_tasks_dict):
+        """Update only the dynamic parts of download widgets (status, progress)"""
+        status_colors = {
+            DownloadStatus.QUEUED: COLORS["subtext"],
+            DownloadStatus.DOWNLOADING: COLORS["blue"],
+            DownloadStatus.COMPLETED: COLORS["green"],
+            DownloadStatus.FAILED: COLORS["red"],
+            DownloadStatus.SKIPPED: COLORS["yellow"],
+        }
+        
+        # Update individual track widgets
+        for task_id, widgets in self._download_widgets.items():
+            task = all_tasks_dict.get(task_id)
+            if not task:
+                continue
+            
+            # Update icon
+            if 'icon_label' in widgets:
+                if task.is_converting:
+                    icon_text, icon_color = "~", COLORS["yellow"]
+                elif task.status == DownloadStatus.COMPLETED:
+                    icon_text, icon_color = "•", COLORS["green"]
+                elif task.status == DownloadStatus.FAILED:
+                    icon_text, icon_color = "×", COLORS["red"]
+                elif task.status == DownloadStatus.DOWNLOADING:
+                    icon_text, icon_color = "•", COLORS["blue"]
+                else:
+                    icon_text, icon_color = "○", COLORS["subtext"]
+                widgets['icon_label'].configure(text=icon_text, text_color=icon_color)
+            
+            # Update status text
+            if 'status_label' in widgets:
+                if task.is_converting:
+                    status_text = "Converting to FLAC..."
+                    status_color = COLORS["yellow"]
+                elif task.status == DownloadStatus.DOWNLOADING:
+                    status_text = f"Downloading {task.progress:.0f}%"
+                    status_color = COLORS["blue"]
+                else:
+                    status_text = task.status.value.capitalize()
+                    status_color = status_colors.get(task.status, COLORS["subtext"])
+                widgets['status_label'].configure(text=status_text, text_color=status_color)
+            
+            # Update progress bar
+            if 'progress_bar' in widgets and widgets['progress_bar']:
+                if task.status == DownloadStatus.DOWNLOADING and not task.is_converting:
+                    widgets['progress_bar'].configure(progress_color=COLORS["blue"])
+                    widgets['progress_bar'].set(task.progress / 100)
+                elif task.is_converting:
+                    widgets['progress_bar'].configure(progress_color=COLORS["yellow"])
+                    widgets['progress_bar'].set(0.5)
+                else:
+                    widgets['progress_bar'].set(0)
+        
+        # Update album group widgets
+        for album_id, widgets in self._album_widgets.items():
+            # Find tasks for this album
+            album_tasks = [t for t in all_tasks_dict.values() 
+                          if (t.album and t.album.id == album_id) or 
+                             (getattr(t.item, 'album', None) and getattr(t.item, 'album').id == album_id)]
+            
+            if not album_tasks:
+                continue
+            
+            completed = sum(1 for t in album_tasks if t.status == DownloadStatus.COMPLETED)
+            total = len(album_tasks)
+            
+            # Update progress label
+            if 'progress_label' in widgets:
+                progress_color = COLORS["green"] if completed == total else COLORS["blue"] if completed > 0 else COLORS["subtext"]
+                widgets['progress_label'].configure(text=f"{completed}/{total}", text_color=progress_color)
+            
+            # Update progress bar
+            if 'progress_bar' in widgets and total > 0:
+                widgets['progress_bar'].set(completed / total)
         
         # Update stats
         self._update_stats()
@@ -1463,17 +1567,27 @@ class TidalMDLApp(ctk.CTk):
         # Progress indicator
         progress_text = f"{completed}/{total}"
         progress_color = COLORS["green"] if completed == total else COLORS["blue"] if completed > 0 else COLORS["subtext"]
-        ctk.CTkLabel(
+        progress_label = ctk.CTkLabel(
             info_row, text=progress_text,
             font=ctk.CTkFont(size=11),
             text_color=progress_color
-        ).pack(side="right", padx=5)
+        )
+        progress_label.pack(side="right", padx=5)
         
         # Album progress bar
+        progress_bar = None
         if total > 0:
-            progress = ctk.CTkProgressBar(header, height=3, progress_color=COLORS["accent"], fg_color=COLORS["bg_medium"])
-            progress.pack(fill="x", padx=12, pady=(0, 8))
-            progress.set(completed / total)
+            progress_bar = ctk.CTkProgressBar(header, height=3, progress_color=COLORS["accent"], fg_color=COLORS["bg_medium"])
+            progress_bar.pack(fill="x", padx=12, pady=(0, 8))
+            progress_bar.set(completed / total)
+        
+        # Store widget references for incremental updates
+        self._album_widgets[album_id] = {
+            'header': header,
+            'progress_label': progress_label,
+            'progress_bar': progress_bar,
+            'thumb_label': thumb_label
+        }
         
         # Track rows (only if expanded)
         if is_expanded:
@@ -1483,6 +1597,8 @@ class TidalMDLApp(ctk.CTk):
     def _toggle_album(self, album_id):
         """Toggle album expansion state"""
         self.expanded_albums[album_id] = not self.expanded_albums.get(album_id, False)
+        # Force a full rebuild since visible widgets change
+        self._last_task_ids = set()
         self._refresh_downloads_ui()
     
     def _create_singles_group(self, tasks):
@@ -1530,11 +1646,12 @@ class TidalMDLApp(ctk.CTk):
             icon_text = "○"
             icon_color = COLORS["subtext"]
         
-        ctk.CTkLabel(
+        icon_label = ctk.CTkLabel(
             frame, text=icon_text, width=25,
             font=ctk.CTkFont(size=14),
             text_color=icon_color
-        ).pack(side="left", padx=(10, 5))
+        )
+        icon_label.pack(side="left", padx=(10, 5))
         
         # Info frame
         info = ctk.CTkFrame(frame, fg_color="transparent")
@@ -1568,42 +1685,50 @@ class TidalMDLApp(ctk.CTk):
         
         # Status text
         if task.is_converting:
-            status_text = f"Converting to FLAC..."
+            status_text = "Converting to FLAC..."
+            status_color = COLORS["yellow"]
         elif task.status == DownloadStatus.DOWNLOADING:
             status_text = f"Downloading {task.progress:.0f}%"
+            status_color = COLORS["blue"]
         else:
             status_text = task.status.value.capitalize()
+            status_color = status_colors.get(task.status, COLORS["subtext"])
         
-        ctk.CTkLabel(
+        status_label = ctk.CTkLabel(
             status_row, text=status_text,
             font=ctk.CTkFont(size=9),
-            text_color=status_colors.get(task.status, COLORS["subtext"]) if not task.is_converting else COLORS["yellow"],
+            text_color=status_color,
             anchor="w"
-        ).pack(side="left")
+        )
+        status_label.pack(side="left")
         
-        # Progress bars
-        show_progress = False
+        # Progress bar container (always create, hide/show as needed)
+        bar_frame = ctk.CTkFrame(status_row, fg_color="transparent")
+        bar_frame.pack(side="right", padx=(10, 0))
         
-        # During active download (not converting yet)
+        # Create progress bar - will be updated incrementally
+        progress_bar = ctk.CTkProgressBar(bar_frame, width=120, height=4, progress_color=COLORS["blue"], fg_color=COLORS["bg_dark"])
+        progress_bar.pack(side="left")
+        
+        # Set initial progress bar state
         if task.status == DownloadStatus.DOWNLOADING and not task.is_converting:
-            show_progress = True
-            bar_frame = ctk.CTkFrame(status_row, fg_color="transparent")
-            bar_frame.pack(side="right", padx=(10, 0))
-            
-            dl_progress = ctk.CTkProgressBar(bar_frame, width=120, height=4, progress_color=COLORS["blue"], fg_color=COLORS["bg_dark"])
-            dl_progress.pack(side="left")
-            dl_progress.set(task.progress / 100)
+            progress_bar.set(task.progress / 100)
+            progress_bar.configure(progress_color=COLORS["blue"])
+        elif task.is_converting:
+            progress_bar.set(0.5)
+            progress_bar.configure(progress_color=COLORS["yellow"])
+        else:
+            # Hide progress bar for non-active states
+            progress_bar.set(0)
         
-        # During conversion
-        if task.is_converting:
-            show_progress = True
-            bar_frame = ctk.CTkFrame(status_row, fg_color="transparent")
-            bar_frame.pack(side="right", padx=(10, 0))
-            
-            # Show indeterminate-like progress (since remux is quick)
-            conv_progress = ctk.CTkProgressBar(bar_frame, width=100, height=4, progress_color=COLORS["yellow"], fg_color=COLORS["bg_dark"])
-            conv_progress.pack(side="left")
-            conv_progress.set(0.5)  # Show halfway as activity indicator
+        # Store widget references for incremental updates
+        self._download_widgets[task.id] = {
+            'frame': frame,
+            'icon_label': icon_label,
+            'status_label': status_label,
+            'progress_bar': progress_bar,
+            'bar_frame': bar_frame
+        }
     
     def _update_stats(self):
         """Update download statistics"""
