@@ -7,8 +7,9 @@ import json
 import webbrowser
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from dataclasses import dataclass, asdict
+from concurrent.futures import Future
 
 import tidalapi
 from rich.console import Console
@@ -16,6 +17,15 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
+
+
+@dataclass
+class OAuthLoginInfo:
+    """Information needed to complete OAuth login in GUI"""
+    auth_url: str
+    user_code: str
+    future: Any  # concurrent.futures.Future
+    session: tidalapi.Session
 
 
 @dataclass
@@ -248,4 +258,82 @@ def get_authenticated_session(
     if perform_oauth_login(session, session_file):
         return session
     
+    return None
+
+
+def start_oauth_flow(quality: tidalapi.Quality = tidalapi.Quality.high_lossless) -> Optional[OAuthLoginInfo]:
+    """
+    Start OAuth flow without blocking - returns info needed for GUI to display
+    
+    Args:
+        quality: Audio quality setting
+    
+    Returns:
+        OAuthLoginInfo with URL, code, and future to check, or None on error
+    """
+    try:
+        session = create_session(quality)
+        login, future = session.login_oauth()
+        auth_url = f"https://{login.verification_uri_complete}"
+        
+        return OAuthLoginInfo(
+            auth_url=auth_url,
+            user_code=login.user_code,
+            future=future,
+            session=session
+        )
+    except Exception as e:
+        console.print(f"[red]Failed to start OAuth flow: {e}[/red]")
+        return None
+
+
+def check_oauth_complete(login_info: OAuthLoginInfo, timeout: float = 0.1) -> Optional[tidalapi.Session]:
+    """
+    Check if OAuth flow completed (non-blocking)
+    
+    Args:
+        login_info: OAuthLoginInfo from start_oauth_flow
+        timeout: How long to wait before returning (default 0.1s for polling)
+    
+    Returns:
+        Authenticated session if complete, None if still waiting or failed
+    """
+    try:
+        # Check if future is done (non-blocking with short timeout)
+        if login_info.future.done():
+            # Get result (may raise exception if auth failed)
+            login_info.future.result(timeout=0)
+            
+            if login_info.session.check_login():
+                return login_info.session
+        else:
+            # Try to get result with short timeout
+            try:
+                login_info.future.result(timeout=timeout)
+                if login_info.session.check_login():
+                    return login_info.session
+            except TimeoutError:
+                pass  # Still waiting
+    except Exception:
+        pass  # Auth failed or other error
+    
+    return None
+
+
+def complete_oauth_and_save(login_info: OAuthLoginInfo, session_file: Path) -> Optional[tidalapi.Session]:
+    """
+    Complete OAuth flow and save session
+    
+    Args:
+        login_info: OAuthLoginInfo from start_oauth_flow
+        session_file: Path to save session
+    
+    Returns:
+        Authenticated session if successful, None otherwise
+    """
+    session = check_oauth_complete(login_info)
+    if session:
+        session_data = SessionData.from_session(session)
+        save_session(session_data, session_file)
+        return session
     return None

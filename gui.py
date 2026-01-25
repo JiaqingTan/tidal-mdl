@@ -19,7 +19,11 @@ from PIL import Image
 import requests
 
 from src.config import Config, load_config
-from src.auth import get_authenticated_session, delete_session
+from src.auth import (
+    get_authenticated_session, delete_session,
+    start_oauth_flow, check_oauth_complete, complete_oauth_and_save,
+    OAuthLoginInfo
+)
 from src.search import search, SearchType, SearchResult
 from src.downloader import (
     DownloadQueue, DownloadTask, DownloadStatus,
@@ -567,9 +571,12 @@ class TidalMDLApp(ctk.CTk):
         self.views[name].grid(row=0, column=0, sticky="nsew")
     
     def _authenticate(self):
-        """Authenticate with Tidal"""
+        """Authenticate with Tidal - tries saved session first, then shows login dialog if needed"""
+        self.status_label.configure(text="Connecting...", text_color=COLORS["subtext"])
+        
         def auth_thread():
             try:
+                # First try to restore existing session
                 self.session = get_authenticated_session(
                     self.config.session_file,
                     self.config.download_quality,
@@ -581,22 +588,134 @@ class TidalMDLApp(ctk.CTk):
                         text="Connected", text_color=COLORS["green"]
                     ))
                 else:
-                    self.after(0, lambda: self.status_label.configure(
-                        text="Not connected", text_color=COLORS["red"]
-                    ))
+                    # Session restore failed, need to show login dialog
+                    self.after(0, self._show_login_dialog)
             except Exception as e:
                 logger.exception("Auth error")
-                self.after(0, lambda: self.status_label.configure(
-                    text="Connection error", text_color=COLORS["red"]
-                ))
+                # Show login dialog on any error
+                self.after(0, self._show_login_dialog)
         
         threading.Thread(target=auth_thread, daemon=True).start()
+    
+    def _show_login_dialog(self):
+        """Show a login dialog with OAuth URL and code"""
+        import webbrowser
+        
+        # Start OAuth flow
+        login_info = start_oauth_flow(self.config.download_quality)
+        if not login_info:
+            self.status_label.configure(text="Login failed", text_color=COLORS["red"])
+            return
+        
+        # Create login dialog
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Sign In to Tidal")
+        dialog.geometry("450x320")
+        dialog.configure(fg_color=COLORS["bg_dark"])
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        # Center on parent
+        dialog.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - (225)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (160)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Title
+        ctk.CTkLabel(
+            dialog, text="🔐 Sign In Required",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color=COLORS["text"]
+        ).pack(pady=(25, 15))
+        
+        # Instructions
+        ctk.CTkLabel(
+            dialog, text="Complete login in your browser, or enter the code at link.tidal.com",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["subtext"],
+            wraplength=400
+        ).pack(pady=(0, 15))
+        
+        # Code display
+        code_frame = ctk.CTkFrame(dialog, fg_color=COLORS["bg_medium"], corner_radius=8)
+        code_frame.pack(padx=30, pady=10, fill="x")
+        
+        ctk.CTkLabel(
+            code_frame, text="Your Code:",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["subtext"]
+        ).pack(pady=(10, 0))
+        
+        ctk.CTkLabel(
+            code_frame, text=login_info.user_code,
+            font=ctk.CTkFont(size=24, weight="bold"),
+            text_color=COLORS["accent"]
+        ).pack(pady=(5, 10))
+        
+        # Buttons
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(pady=15)
+        
+        def open_browser():
+            webbrowser.open(login_info.auth_url)
+        
+        def copy_link():
+            self.clipboard_clear()
+            self.clipboard_append(login_info.auth_url)
+            copy_btn.configure(text="Copied!")
+            dialog.after(1500, lambda: copy_btn.configure(text="Copy Link"))
+        
+        ctk.CTkButton(
+            btn_frame, text="Open Browser", width=130, height=38,
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=open_browser
+        ).pack(side="left", padx=5)
+        
+        copy_btn = ctk.CTkButton(
+            btn_frame, text="Copy Link", width=110, height=38,
+            fg_color=COLORS["bg_light"], hover_color=COLORS["bg_medium"],
+            text_color=COLORS["text"],
+            font=ctk.CTkFont(size=13),
+            command=copy_link
+        )
+        copy_btn.pack(side="left", padx=5)
+        
+        # Status
+        status_label = ctk.CTkLabel(
+            dialog, text="Waiting for login...",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["subtext"]
+        )
+        status_label.pack(pady=(5, 15))
+        
+        # Poll for auth completion
+        def check_auth():
+            session = check_oauth_complete(login_info, timeout=0.5)
+            if session:
+                # Save session and update app
+                from src.auth import SessionData, save_session
+                session_data = SessionData.from_session(session)
+                save_session(session_data, self.config.session_file)
+                
+                self.session = session
+                self.download_queue = DownloadQueue(self.config, self.session)
+                self.status_label.configure(text="Connected", text_color=COLORS["green"])
+                dialog.destroy()
+            elif dialog.winfo_exists():
+                # Keep polling
+                dialog.after(1000, check_auth)
+        
+        # Start polling after opening browser automatically
+        open_browser()
+        dialog.after(2000, check_auth)
     
     def _logout(self):
         """Logout"""
         delete_session(self.config.session_file)
         self.session = None
-        self.status_label.configure(text="⏳ Connecting...", text_color=COLORS["subtext"])
+        self.status_label.configure(text="Connecting...", text_color=COLORS["subtext"])
         self._authenticate()
     
     def _do_search(self):
