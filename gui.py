@@ -434,6 +434,14 @@ class TidalMDLApp(ctk.CTk):
             scroll, "Skip Existing Files", self.config.skip_existing
         )
         
+        # Playlist Settings section
+        self._add_section(scroll, "Playlist Settings")
+        self.settings_widgets["playlist_album_artist"] = self._add_text_option(
+            scroll, "Album Artist for Playlists (e.g. Various Artists, VA)", 
+            self.config.playlist_album_artist,
+            hint="Used when downloading playlists 'As One'"
+        )
+        
         # Save button
         ctk.CTkButton(
             view, text="Save Settings", height=45,
@@ -1509,16 +1517,21 @@ class TidalMDLApp(ctk.CTk):
             ).pack(pady=80)
             return
         
-        # Group tasks by album
-        albums = {}
+        # Group tasks: first by playlist (for compilations), then by album
+        playlists = {}  # playlist_name -> tasks
+        albums = {}     # album_id -> {"album": album, "tasks": []}
         singles = []
         
         for task in all_tasks:
-            album = task.album
-            if album:
-                album_id = album.id
+            # Check if this is a playlist compilation download
+            if task.playlist_name:
+                if task.playlist_name not in playlists:
+                    playlists[task.playlist_name] = []
+                playlists[task.playlist_name].append(task)
+            elif task.album:
+                album_id = task.album.id
                 if album_id not in albums:
-                    albums[album_id] = {"album": album, "tasks": []}
+                    albums[album_id] = {"album": task.album, "tasks": []}
                 albums[album_id]["tasks"].append(task)
             else:
                 # Treat as single - use track name as "album"
@@ -1530,6 +1543,10 @@ class TidalMDLApp(ctk.CTk):
                     albums[album_id]["tasks"].append(task)
                 else:
                     singles.append(task)
+        
+        # Show playlists first (as they are usually the current download)
+        for playlist_name, tasks in playlists.items():
+            self._create_playlist_group(playlist_name, tasks)
         
         # Show albums
         for album_id, data in albums.items():
@@ -1595,10 +1612,16 @@ class TidalMDLApp(ctk.CTk):
         
         # Update album group widgets
         for album_id, widgets in self._album_widgets.items():
-            # Find tasks for this album
-            album_tasks = [t for t in all_tasks_dict.values() 
-                          if (t.album and t.album.id == album_id) or 
-                             (getattr(t.item, 'album', None) and getattr(t.item, 'album').id == album_id)]
+            # Check if this is a playlist group
+            if album_id.startswith("playlist_"):
+                # Find tasks for this playlist
+                playlist_name = album_id[9:]  # Remove "playlist_" prefix
+                album_tasks = [t for t in all_tasks_dict.values() if t.playlist_name == playlist_name]
+            else:
+                # Find tasks for this album
+                album_tasks = [t for t in all_tasks_dict.values() 
+                              if (t.album and t.album.id == album_id) or 
+                                 (getattr(t.item, 'album', None) and getattr(t.item, 'album').id == album_id)]
             
             if not album_tasks:
                 continue
@@ -1706,6 +1729,104 @@ class TidalMDLApp(ctk.CTk):
             'progress_label': progress_label,
             'progress_bar': progress_bar,
             'thumb_label': thumb_label
+        }
+        
+        # Track rows (only if expanded)
+        if is_expanded:
+            for task in tasks:
+                self._create_track_download_item(task, indent=True)
+    
+    def _create_playlist_group(self, playlist_name, tasks):
+        """Create a playlist group widget with collapsible tracks for playlist compilation downloads"""
+        # Use playlist_name as a unique identifier (prefixed to avoid collision with album IDs)
+        playlist_id = f"playlist_{playlist_name}"
+        
+        # Default to collapsed for new playlists
+        if playlist_id not in self.expanded_albums:
+            self.expanded_albums[playlist_id] = False
+        
+        is_expanded = self.expanded_albums[playlist_id]
+        
+        # Calculate playlist stats
+        completed = sum(1 for t in tasks if t.status == DownloadStatus.COMPLETED)
+        failed = sum(1 for t in tasks if t.status == DownloadStatus.FAILED)
+        total = len(tasks)
+        
+        # Get album artist from first task
+        album_artist = tasks[0].playlist_album_artist if tasks else "Various Artists"
+        
+        # Playlist header (clickable) - uses different color to distinguish from albums
+        header = ctk.CTkFrame(self.downloads_list, fg_color="#3d2f5c", corner_radius=8)  # Purple tint for playlists
+        header.pack(fill="x", pady=(10, 2))
+        
+        # Playlist info row
+        info_row = ctk.CTkFrame(header, fg_color="transparent")
+        info_row.pack(fill="x", padx=10, pady=8)
+        
+        # Expand/Collapse arrow
+        arrow_text = "−" if is_expanded else "+"
+        arrow_btn = ctk.CTkButton(
+            info_row, text=arrow_text, width=25, height=25,
+            fg_color="transparent", hover_color=COLORS["bg_medium"],
+            text_color=COLORS["subtext"],
+            font=ctk.CTkFont(size=12),
+            command=lambda: self._toggle_album(playlist_id)
+        )
+        arrow_btn.pack(side="left", padx=(0, 5))
+        
+        # Playlist icon (music note symbol instead of album art)
+        icon_label = ctk.CTkLabel(
+            info_row, text="📋", width=45, height=45,
+            fg_color=COLORS["bg_medium"], corner_radius=6,
+            font=ctk.CTkFont(size=20)
+        )
+        icon_label.pack(side="left", padx=(0, 10))
+        
+        # Playlist name with album artist
+        full_name = f"{album_artist} - {playlist_name}"
+        # Truncate if too long
+        display_name = full_name[:45] + "..." if len(full_name) > 45 else full_name
+        name_label = ctk.CTkLabel(
+            info_row, text=display_name,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COLORS["text"]
+        )
+        name_label.pack(side="left", padx=(0, 10))
+        name_label.bind("<Button-1>", lambda e: self._toggle_album(playlist_id))
+        
+        # Playlist badge
+        ctk.CTkLabel(
+            info_row, text="Playlist",
+            font=ctk.CTkFont(size=9),
+            text_color="#a78bfa",  # Light purple
+            fg_color="#4c3875",
+            corner_radius=4,
+            width=50, height=18
+        ).pack(side="left", padx=5)
+        
+        # Progress indicator
+        progress_text = f"{completed}/{total}"
+        progress_color = COLORS["green"] if completed == total else COLORS["blue"] if completed > 0 else COLORS["subtext"]
+        progress_label = ctk.CTkLabel(
+            info_row, text=progress_text,
+            font=ctk.CTkFont(size=11),
+            text_color=progress_color
+        )
+        progress_label.pack(side="right", padx=5)
+        
+        # Playlist progress bar
+        progress_bar = None
+        if total > 0:
+            progress_bar = ctk.CTkProgressBar(header, height=3, progress_color="#a78bfa", fg_color=COLORS["bg_medium"])  # Purple progress
+            progress_bar.pack(fill="x", padx=12, pady=(0, 8))
+            progress_bar.set(completed / total)
+        
+        # Store widget references for incremental updates
+        self._album_widgets[playlist_id] = {
+            'header': header,
+            'progress_label': progress_label,
+            'progress_bar': progress_bar,
+            'thumb_label': icon_label
         }
         
         # Track rows (only if expanded)
@@ -1923,6 +2044,9 @@ class TidalMDLApp(ctk.CTk):
             self.config.save_album_art = bool(self.settings_widgets["save_album_art"].get())
             self.config.embed_lyrics = bool(self.settings_widgets["embed_lyrics"].get())
             self.config.skip_existing = bool(self.settings_widgets["skip_existing"].get())
+            
+            # Playlist settings
+            self.config.playlist_album_artist = self.settings_widgets["playlist_album_artist"].get() or "Various Artists"
             
             # Save to .env file
             save_config(self.config, Path(".env"))

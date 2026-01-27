@@ -35,6 +35,9 @@ class Config:
     save_album_art: bool = True
     album_art_filename: str = "cover.jpg"
     
+    # Playlist settings
+    playlist_album_artist: str = "Various Artists"
+    
     # Video
     video_quality: tidalapi.VideoQuality = tidalapi.VideoQuality.high
     
@@ -95,6 +98,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         embed_lyrics=os.getenv("EMBED_LYRICS", "true").lower() == "true",
         save_album_art=os.getenv("SAVE_ALBUM_ART", "true").lower() == "true",
         album_art_filename=os.getenv("ALBUM_ART_FILENAME", "cover.jpg"),
+        playlist_album_artist=os.getenv("PLAYLIST_ALBUM_ARTIST", "Various Artists"),
         video_quality=video_quality,
         skip_existing=os.getenv("SKIP_EXISTING", "true").lower() == "true",
     )
@@ -139,6 +143,9 @@ EMBED_ALBUM_ART={str(config.embed_album_art).lower()}
 EMBED_LYRICS={str(config.embed_lyrics).lower()}
 SAVE_ALBUM_ART={str(config.save_album_art).lower()}
 ALBUM_ART_FILENAME={config.album_art_filename}
+
+# Playlist Settings
+PLAYLIST_ALBUM_ARTIST={config.playlist_album_artist}
 
 # Video Settings
 VIDEO_QUALITY={video_quality_reverse.get(config.video_quality, "HIGH")}
