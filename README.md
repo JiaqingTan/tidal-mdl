@@ -87,6 +87,29 @@ pyinstaller tidal-mdl-gui.spec --clean
 pyinstaller tidal-mdl-gui.spec --clean
 ```
 
+## Troubleshooting
+
+### Clear Authentication Cache
+
+If you experience authentication issues (e.g., login failures, expired sessions), delete the cached session file:
+
+**macOS/Linux:**
+```bash
+rm ~/.tidal-mdl/session.json
+```
+
+**Windows (PowerShell):**
+```powershell
+Remove-Item "$env:USERPROFILE\.tidal-mdl\session.json"
+```
+
+**Windows (Command Prompt):**
+```cmd
+del "%USERPROFILE%\.tidal-mdl\session.json"
+```
+
+After clearing the cache, restart the application and log in again.
+
 ## Disclaimer
 
 - **Private use only** - Do not distribute copyrighted content
