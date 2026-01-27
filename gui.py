@@ -1564,6 +1564,7 @@ class TidalMDLApp(ctk.CTk):
             DownloadStatus.COMPLETED: COLORS["green"],
             DownloadStatus.FAILED: COLORS["red"],
             DownloadStatus.SKIPPED: COLORS["yellow"],
+            DownloadStatus.CANCELLED: COLORS["yellow"],
         }
         
         # Update individual track widgets
@@ -1580,6 +1581,8 @@ class TidalMDLApp(ctk.CTk):
                     icon_text, icon_color = "•", COLORS["green"]
                 elif task.status == DownloadStatus.FAILED:
                     icon_text, icon_color = "×", COLORS["red"]
+                elif task.status == DownloadStatus.CANCELLED:
+                    icon_text, icon_color = "○", COLORS["yellow"]
                 elif task.status == DownloadStatus.DOWNLOADING:
                     icon_text, icon_color = "•", COLORS["blue"]
                 else:
@@ -1598,6 +1601,12 @@ class TidalMDLApp(ctk.CTk):
                     status_text = task.status.value.capitalize()
                     status_color = status_colors.get(task.status, COLORS["subtext"])
                 widgets['status_label'].configure(text=status_text, text_color=status_color)
+            
+            # Update format info (codec/quality) - this is populated when download starts
+            if 'format_label' in widgets:
+                format_info = task.format_info
+                if format_info:
+                    widgets['format_label'].configure(text=format_info)
             
             # Update progress bar
             if 'progress_bar' in widgets and widgets['progress_bar']:
@@ -1863,6 +1872,7 @@ class TidalMDLApp(ctk.CTk):
             DownloadStatus.COMPLETED: COLORS["green"],
             DownloadStatus.FAILED: COLORS["red"],
             DownloadStatus.SKIPPED: COLORS["yellow"],
+            DownloadStatus.CANCELLED: COLORS["yellow"],
         }
         
         frame = ctk.CTkFrame(self.downloads_list, fg_color=COLORS["bg_medium"], corner_radius=6, height=55)
@@ -1879,6 +1889,9 @@ class TidalMDLApp(ctk.CTk):
         elif task.status == DownloadStatus.FAILED:
             icon_text = "×"
             icon_color = COLORS["red"]
+        elif task.status == DownloadStatus.CANCELLED:
+            icon_text = "○"
+            icon_color = COLORS["yellow"]
         elif task.status == DownloadStatus.DOWNLOADING:
             icon_text = "•"
             icon_color = COLORS["blue"]
@@ -1910,14 +1923,14 @@ class TidalMDLApp(ctk.CTk):
             text_color=COLORS["text"], anchor="w"
         ).pack(side="left")
         
-        # Format info (codec/quality)
+        # Format info (codec/quality) - always create, may be empty initially
         format_info = task.format_info
-        if format_info:
-            ctk.CTkLabel(
-                title_row, text=format_info,
-                font=ctk.CTkFont(size=9),
-                text_color=COLORS["accent"], anchor="e"
-            ).pack(side="right", padx=(10, 0))
+        format_label = ctk.CTkLabel(
+            title_row, text=format_info if format_info else "",
+            font=ctk.CTkFont(size=9),
+            text_color=COLORS["accent"], anchor="e"
+        )
+        format_label.pack(side="right", padx=(10, 0))
         
         # Status row
         status_row = ctk.CTkFrame(info, fg_color="transparent")
@@ -1967,7 +1980,8 @@ class TidalMDLApp(ctk.CTk):
             'icon_label': icon_label,
             'status_label': status_label,
             'progress_bar': progress_bar,
-            'bar_frame': bar_frame
+            'bar_frame': bar_frame,
+            'format_label': format_label,
         }
     
     def _update_stats(self):
@@ -1998,11 +2012,17 @@ class TidalMDLApp(ctk.CTk):
         refresh()
     
     def _stop_downloads(self):
-        """Stop downloads"""
+        """Stop downloads - runs in background to avoid UI freeze"""
         if self.download_queue:
-            self.download_queue.stop_workers()
-            self._show_toast("Downloads stopped", COLORS["yellow"])
-            self._refresh_downloads_ui()
+            self._show_toast("Stopping downloads...", COLORS["yellow"])
+            
+            def stop_thread():
+                self.download_queue.stop_workers()
+                # Update UI after stopping
+                self.after(0, lambda: self._show_toast("Downloads stopped", COLORS["yellow"]))
+                self.after(0, self._refresh_downloads_ui)
+            
+            threading.Thread(target=stop_thread, daemon=True).start()
     
     def _clear_downloads(self):
         """Clear downloads"""

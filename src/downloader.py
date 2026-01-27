@@ -132,6 +132,11 @@ class DownloadStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+
+# Temp file extension used during downloads
+TEMP_DOWNLOAD_EXTENSION = ".downloading"
 
 
 @dataclass
@@ -147,6 +152,9 @@ class DownloadTask:
     album: Optional[tidalapi.Album] = None
     track_number: int = 1
     total_tracks: int = 1
+    # Playlist compilation info (for "download as one" mode)
+    playlist_name: Optional[str] = None
+    playlist_album_artist: Optional[str] = None
     # Stream info (populated during download)
     codec: Optional[str] = None
     quality: Optional[str] = None
@@ -349,6 +357,7 @@ class DownloadQueue:
         """Download a track"""
         track = task.item
         output_path = task.output_path
+        download_path = None  # Initialize for cleanup in exception handler
         
         # Skip if exists and configured to skip
         if self.config.skip_existing and output_path.exists():
@@ -439,20 +448,21 @@ class DownloadQueue:
             
             if needs_remux:
                 # Download to temp file, then remux to FLAC
-                temp_path = safe_add_extension(output_path, ".tmp.m4a")
                 final_path = safe_add_extension(output_path, ".flac")
-                download_path = temp_path
+                # Use .downloading extension for temp file
+                download_path = Path(str(final_path) + TEMP_DOWNLOAD_EXTENSION)
                 logger.info(f"FLAC in MP4 container detected - will remux to native FLAC")
             elif codec == "FLAC" and file_ext == ".m4a" and not FFMPEG_AVAILABLE:
                 # FLAC in MP4 but no ffmpeg - save as M4A with warning
                 final_path = safe_add_extension(output_path, ".m4a")
-                download_path = final_path
+                download_path = Path(str(final_path) + TEMP_DOWNLOAD_EXTENSION)
                 logger.warning("FLAC in MP4 container but ffmpeg not available - saving as .m4a")
             else:
                 # Normal case - use the extension from manifest
                 ext = file_ext if file_ext else ".m4a"
                 final_path = safe_add_extension(output_path, ext)
-                download_path = final_path
+                # Always download to temp file first, then rename on success
+                download_path = Path(str(final_path) + TEMP_DOWNLOAD_EXTENSION)
             
             task.output_path = final_path
             
@@ -471,6 +481,9 @@ class DownloadQueue:
             # Timeout configuration
             TIMEOUT = 30
             
+            # Track if download was cancelled
+            was_cancelled = False
+            
             # For single URL streams (BTS)
             if len(urls) == 1:
                 url = urls[0]
@@ -482,6 +495,10 @@ class DownloadQueue:
                 
                 with open(download_path, "wb") as f:
                     for chunk in response.iter_content(chunk_size=8192):
+                        # Check for stop signal - allows quick cancellation
+                        if self.stop_event.is_set():
+                            was_cancelled = True
+                            break
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
@@ -494,6 +511,10 @@ class DownloadQueue:
                 # For segmented streams (DASH), concatenate segments
                 with open(download_path, "wb") as f:
                     for i, url in enumerate(urls):
+                        # Check for stop signal - allows quick cancellation
+                        if self.stop_event.is_set():
+                            was_cancelled = True
+                            break
                         response = requests.get(url, timeout=TIMEOUT)
                         response.raise_for_status()
                         f.write(response.content)
@@ -501,6 +522,18 @@ class DownloadQueue:
                         task.progress = pct
                         if progress is not None and task_id is not None:
                             progress.update(task_id, completed=pct)
+            
+            # If cancelled, clean up partial download and return
+            if was_cancelled:
+                task.status = DownloadStatus.CANCELLED
+                task.error = "Download cancelled by user"
+                logger.info(f"Download cancelled, cleaning up: {download_path}")
+                try:
+                    if download_path.exists():
+                        download_path.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to remove partial download: {e}")
+                return False
             
             # Remux if needed (FLAC in MP4 container -> native FLAC)
             if needs_remux:
@@ -516,16 +549,26 @@ class DownloadQueue:
                     except Exception as e:
                         logger.warning(f"Failed to remove temp file: {e}")
                 else:
-                    # Remux failed - keep the M4A file
+                    # Remux failed - rename temp file to M4A
                     task.is_converting = False  # Reset after conversion
-                    logger.warning("Remux failed - keeping M4A file")
-                    final_path = safe_add_extension(download_path.parent / download_path.stem.replace('.tmp', ''), ".m4a")
+                    logger.warning("Remux failed - keeping as M4A file")
+                    # Remove .downloading extension and change final extension to .m4a
+                    final_path = Path(str(download_path).replace(TEMP_DOWNLOAD_EXTENSION, "").rsplit(".", 1)[0] + ".m4a")
                     shutil.move(str(download_path), str(final_path))
                     task.output_path = final_path
+            else:
+                # Rename temp file to final destination
+                try:
+                    shutil.move(str(download_path), str(final_path))
+                    logger.debug(f"Moved temp file to final destination: {final_path}")
+                except Exception as e:
+                    logger.error(f"Failed to rename temp file to final: {e}")
+                    task.error = f"Failed to finalize download: {e}"
+                    return False
             
             # Embed metadata
             try:
-                self._embed_metadata(track, task.output_path, task.album)
+                self._embed_metadata(track, task.output_path, task.album, task)
             except Exception as e:
                 logger.error(f"Failed to embed metadata for {task.output_path}: {e}")
                 # Don't fail the download just because metadata failed
@@ -533,6 +576,13 @@ class DownloadQueue:
             return True
             
         except Exception as e:
+            # Clean up partial downloads on error
+            try:
+                if download_path and download_path.exists():
+                    download_path.unlink()
+                    logger.info(f"Cleaned up partial download: {download_path}")
+            except Exception:
+                pass
             task.error = str(e)
             logger.exception(f"Download error for {task.item.name}")
             return False
@@ -540,13 +590,16 @@ class DownloadQueue:
     def _download_video(self, task: DownloadTask, progress: Progress, task_id: TaskID) -> bool:
         """Download a video"""
         video = task.item
-        output_path = safe_add_extension(task.output_path, ".mp4")
-        task.output_path = output_path
+        final_path = safe_add_extension(task.output_path, ".mp4")
+        task.output_path = final_path
         
         # Skip if exists
-        if self.config.skip_existing and output_path.exists():
+        if self.config.skip_existing and final_path.exists():
             task.status = DownloadStatus.SKIPPED
             return True
+        
+        # Use temp file for download
+        download_path = Path(str(final_path) + TEMP_DOWNLOAD_EXTENSION)
         
         try:
             # Get video URL
@@ -556,7 +609,7 @@ class DownloadQueue:
                 return False
             
             # Create output directory
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Download video
             response = requests.get(stream_url, stream=True, timeout=30)
@@ -564,9 +617,14 @@ class DownloadQueue:
             
             total_size = int(response.headers.get("content-length", 0))
             downloaded = 0
+            was_cancelled = False
             
-            with open(output_path, "wb") as f:
+            with open(download_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=32768):
+                    # Check for stop signal
+                    if self.stop_event.is_set():
+                        was_cancelled = True
+                        break
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
@@ -576,13 +634,37 @@ class DownloadQueue:
                             if progress is not None and task_id is not None:
                                 progress.update(task_id, completed=pct)
             
+            # Handle cancellation
+            if was_cancelled:
+                task.status = DownloadStatus.CANCELLED
+                task.error = "Download cancelled by user"
+                try:
+                    if download_path.exists():
+                        download_path.unlink()
+                except Exception:
+                    pass
+                return False
+            
+            # Rename temp file to final destination
+            try:
+                shutil.move(str(download_path), str(final_path))
+            except Exception as e:
+                task.error = f"Failed to finalize download: {e}"
+                return False
+            
             return True
             
         except Exception as e:
+            # Clean up partial download
+            try:
+                if download_path.exists():
+                    download_path.unlink()
+            except Exception:
+                pass
             task.error = str(e)
             return False
     
-    def _embed_metadata(self, track: tidalapi.Track, file_path: Path, album: Optional[tidalapi.Album] = None) -> None:
+    def _embed_metadata(self, track: tidalapi.Track, file_path: Path, album: Optional[tidalapi.Album] = None, task: Optional[DownloadTask] = None) -> None:
         """Embed metadata into the downloaded file"""
         if not self.config.embed_album_art:
              # Even if album art is disabled, we probably want basic tags
@@ -592,11 +674,11 @@ class DownloadQueue:
         logger.debug(f"Embedding metadata for {file_path}")
         
         if suffix == ".flac":
-            self._embed_flac_metadata(track, file_path, album)
+            self._embed_flac_metadata(track, file_path, album, task)
         elif suffix in (".m4a", ".mp4"):
-            self._embed_m4a_metadata(track, file_path, album)
+            self._embed_m4a_metadata(track, file_path, album, task)
     
-    def _embed_flac_metadata(self, track: tidalapi.Track, file_path: Path, album: Optional[tidalapi.Album] = None) -> None:
+    def _embed_flac_metadata(self, track: tidalapi.Track, file_path: Path, album: Optional[tidalapi.Album] = None, task: Optional[DownloadTask] = None) -> None:
         """Embed metadata into FLAC file"""
         try:
             audio = FLAC(file_path)
@@ -607,8 +689,19 @@ class DownloadQueue:
         # Basic tags
         audio["TITLE"] = track.name or ""
         audio["ARTIST"] = track.artist.name if track.artist else ""
-        audio["ALBUM"] = track.album.name if track.album else ""
-        audio["TRACKNUMBER"] = str(track.track_num or 1)
+        
+        # Check if this is a playlist compilation download
+        if task and task.playlist_name:
+            # Override Album with playlist name and set Album Artist
+            audio["ALBUM"] = task.playlist_name
+            audio["ALBUMARTIST"] = task.playlist_album_artist or "Various Artists"
+            # Use playlist track number
+            audio["TRACKNUMBER"] = str(task.track_number or 1)
+            logger.info(f"Playlist compilation metadata: Album='{task.playlist_name}', AlbumArtist='{task.playlist_album_artist}'")
+        else:
+            # Use original album metadata
+            audio["ALBUM"] = track.album.name if track.album else ""
+            audio["TRACKNUMBER"] = str(track.track_num or 1)
         
         # Date/Year
         if album and album.release_date:
@@ -661,11 +754,10 @@ class DownloadQueue:
                     logger.warning("No album art URL available")
             except Exception as e:
                 logger.warning(f"Error embedding FLAC album art: {e}")
-        
         audio.save()
         logger.debug(f"Saved FLAC metadata to {file_path}")
     
-    def _embed_m4a_metadata(self, track: tidalapi.Track, file_path: Path, album: Optional[tidalapi.Album] = None) -> None:
+    def _embed_m4a_metadata(self, track: tidalapi.Track, file_path: Path, album: Optional[tidalapi.Album] = None, task: Optional[DownloadTask] = None) -> None:
         """Embed metadata into M4A file"""
         try:
             audio = MP4(file_path)
@@ -676,8 +768,19 @@ class DownloadQueue:
 
         audio["\xa9nam"] = track.name or ""
         audio["\xa9ART"] = track.artist.name if track.artist else ""
-        audio["\xa9alb"] = track.album.name if track.album else ""
-        audio["trkn"] = [(track.track_num or 1, 0)]
+        
+        # Check if this is a playlist compilation download
+        if task and task.playlist_name:
+            # Override Album with playlist name and set Album Artist
+            audio["\xa9alb"] = task.playlist_name
+            audio["aART"] = task.playlist_album_artist or "Various Artists"
+            # Use playlist track number
+            audio["trkn"] = [(task.track_number or 1, task.total_tracks or 0)]
+            logger.info(f"Playlist compilation metadata: Album='{task.playlist_name}', AlbumArtist='{task.playlist_album_artist}'")
+        else:
+            # Use original album metadata
+            audio["\xa9alb"] = track.album.name if track.album else ""
+            audio["trkn"] = [(track.track_num or 1, 0)]
         
         if album and album.release_date:
             audio["\xa9day"] = str(album.release_date.year)
@@ -856,8 +959,9 @@ def create_playlist_tasks(
         config: Application config
         session: Tidal session
         playlist: Playlist to download
-        as_compilation: If True, save as "Various Artists - PlaylistName" folder.
-                       If False, organize by original artist/album.
+        as_compilation: If True, save as "Various Artists - PlaylistName" folder
+                       and override metadata with playlist name as Album.
+                       If False, organize by original artist/album with original metadata.
     """
     tasks = []
     
@@ -901,6 +1005,9 @@ def create_playlist_tasks(
                 track_number=idx,
                 total_tracks=total_tracks,
                 album=track.album if hasattr(track, 'album') else None,
+                # Pass playlist info for metadata override when downloading as compilation
+                playlist_name=playlist.name if as_compilation else None,
+                playlist_album_artist=config.playlist_album_artist if as_compilation else None,
             )
             tasks.append(task)
     except Exception as e:
