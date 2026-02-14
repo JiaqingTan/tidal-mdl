@@ -4,8 +4,31 @@ Logging configuration for Tidal MDL
 
 import logging
 import sys
+import os
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
+
+
+def get_log_directory() -> Path:
+    """
+    Get platform-appropriate log directory.
+    
+    - macOS: ~/Library/Logs/TidalMDL/
+    - Windows: %APPDATA%/TidalMDL/logs/
+    - Linux: ~/.tidal-mdl/logs/
+    
+    Falls back to ~/.tidal-mdl/logs/ if platform detection fails.
+    
+    Returns:
+        Path to the log directory
+    """
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Logs" / "TidalMDL"
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", str(Path.home()))
+        return Path(appdata) / "TidalMDL" / "logs"
+    else:
+        return Path.home() / ".tidal-mdl" / "logs"
 
 
 def setup_logger(
@@ -76,6 +99,6 @@ def setup_logger(
     return logger
 
 
-# Create global logger instance
-log_dir = Path("logs")
+# Create global logger instance using platform-appropriate directory
+log_dir = get_log_directory()
 logger = setup_logger("tidal_dl", log_dir)

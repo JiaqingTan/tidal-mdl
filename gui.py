@@ -61,14 +61,17 @@ class TidalMDLApp(ctk.CTk):
     """Main application window"""
     
     def __init__(self):
+        logger.info("TidalMDLApp.__init__ starting...")
         super().__init__()
         
         # Window setup
+        logger.info("Configuring window...")
         self.title("Tidal MDL")
         self.geometry("1100x750")
         self.configure(fg_color=COLORS["bg_dark"])
         
         # State
+        logger.info("Loading config...")
         self.config = load_config()
         self.session = None
         self.download_queue = None
@@ -105,10 +108,13 @@ class TidalMDLApp(ctk.CTk):
         self.playlists_has_more = True
         
         # Build UI
+        logger.info("Building UI...")
         self._build_ui()
+        logger.info("UI built successfully")
         
         # Start auth
         self.after(500, self._authenticate)
+        logger.info("TidalMDLApp.__init__ complete, auth scheduled")
     
     def _load_image_async(self, url, size, callback, cache_key=None):
         """Load an image asynchronously with caching and thread pool"""
@@ -580,10 +586,13 @@ class TidalMDLApp(ctk.CTk):
     
     def _authenticate(self):
         """Authenticate with Tidal - tries saved session first, then shows login dialog if needed"""
+        logger.info("Starting authentication...")
         self.status_label.configure(text="Connecting...", text_color=COLORS["subtext"])
         
         def auth_thread():
             try:
+                logger.info(f"Auth thread started, session file: {self.config.session_file}")
+                logger.info(f"Session file exists: {self.config.session_file.exists()}")
                 # First try to restore existing session
                 self.session = get_authenticated_session(
                     self.config.session_file,
@@ -591,15 +600,19 @@ class TidalMDLApp(ctk.CTk):
                     force_login=False
                 )
                 if self.session:
+                    logger.info("Session restored successfully, creating download queue...")
                     self.download_queue = DownloadQueue(self.config, self.session)
+                    logger.info("Download queue created, updating UI...")
                     self.after(0, lambda: self.status_label.configure(
                         text="Connected", text_color=COLORS["green"]
                     ))
+                    logger.info("Authentication complete - connected")
                 else:
                     # Session restore failed, need to show login dialog
+                    logger.info("No saved session or session expired, showing login dialog...")
                     self.after(0, self._show_login_dialog)
             except Exception as e:
-                logger.exception("Auth error")
+                logger.exception(f"Auth error: {e}")
                 # Show login dialog on any error
                 self.after(0, self._show_login_dialog)
         
@@ -2096,24 +2109,166 @@ class TidalMDLApp(ctk.CTk):
 
 
 def main():
-    """Main entry point"""
-    logger.info("Starting Tidal MDL GUI")
-    app = TidalMDLApp()
+    """Main entry point with comprehensive startup logging"""
+    import traceback
     
-    def on_closing():
-        """Cleanup on app close"""
+    # Import logger's log directory function for a predictable crash log location
+    from src.logger import get_log_directory
+    crash_log_dir = get_log_directory()
+    crash_log_dir.mkdir(parents=True, exist_ok=True)
+    crash_log_path = crash_log_dir / "startup-crash.log"
+    
+    # Redirect stderr to crash log file so PyInstaller tracebacks are captured
+    # (console=False means stderr goes nowhere otherwise)
+    try:
+        stderr_log = open(crash_log_dir / "stderr.log", "w", encoding="utf-8")
+        sys.stderr = stderr_log
+    except Exception:
+        stderr_log = None
+    
+    try:
+        # ---- Phase 1: Basic startup ----
+        logger.info("=" * 60)
+        logger.info("TIDAL MDL GUI STARTUP")
+        logger.info("=" * 60)
+        
+        # System info
+        import platform
+        logger.info(f"Platform: {platform.platform()}")
+        logger.info(f"Python: {sys.version}")
+        logger.info(f"Executable: {sys.executable}")
+        logger.info(f"CWD: {os.getcwd()}")
+        logger.info(f"__file__: {__file__}")
+        logger.info(f"sys.argv: {sys.argv}")
+        logger.info(f"Frozen: {getattr(sys, 'frozen', False)}")
+        logger.info(f"Log directory: {crash_log_dir}")
+        
+        if getattr(sys, 'frozen', False):
+            bundle_dir = os.path.dirname(sys.executable)
+            logger.info(f"Bundle dir (executable parent): {bundle_dir}")
+            if hasattr(sys, '_MEIPASS'):
+                logger.info(f"PyInstaller _MEIPASS: {sys._MEIPASS}")
+                # List top-level contents of _MEIPASS for debugging
+                try:
+                    meipass_contents = os.listdir(sys._MEIPASS)
+                    logger.debug(f"_MEIPASS contents ({len(meipass_contents)} items): {meipass_contents[:30]}")
+                except Exception as e:
+                    logger.warning(f"Could not list _MEIPASS: {e}")
+        
+        # ---- Phase 2: Check key dependencies ----
+        logger.info("Checking key dependencies...")
+        
+        dep_checks = [
+            ("customtkinter", "ctk"),
+            ("PIL", "PIL/Pillow"),
+            ("tidalapi", "tidalapi"),
+            ("requests", "requests"),
+            ("mutagen", "mutagen"),
+            ("dotenv", "python-dotenv"),
+        ]
+        for mod_name, display_name in dep_checks:
+            try:
+                mod = __import__(mod_name)
+                version = getattr(mod, '__version__', getattr(mod, 'VERSION', 'unknown'))
+                logger.info(f"  ✓ {display_name}: {version}")
+            except ImportError as e:
+                logger.error(f"  ✗ {display_name}: MISSING - {e}")
+            except Exception as e:
+                logger.warning(f"  ? {display_name}: {e}")
+        
+        # ---- Phase 3: Check .env / config ----
+        logger.info("Loading configuration...")
         try:
-            # Shutdown thread pool
-            app._image_executor.shutdown(wait=False)
-            # Clear image cache
-            app._image_cache.clear()
-            app._image_cache_order.clear()
-        except:
-            pass
-        app.destroy()
+            from src.config import load_config
+            test_config = load_config()
+            logger.info(f"  Config loaded successfully")
+            logger.info(f"  Download folder: {test_config.download_folder}")
+            logger.info(f"  Session file: {test_config.session_file}")
+            logger.info(f"  Download quality: {test_config.download_quality}")
+        except Exception as e:
+            logger.error(f"  Config load FAILED: {e}")
+            logger.debug(traceback.format_exc())
+        
+        # ---- Phase 4: Check display/GUI ----
+        logger.info("Checking display environment...")
+        if sys.platform == "darwin":
+            display = os.environ.get("DISPLAY", "(not set - normal for macOS)")
+            logger.info(f"  DISPLAY: {display}")
+            # Check if running from an app bundle
+            logger.info(f"  NSProcessInfo available: checking...")
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["sw_vers"], capture_output=True, text=True, timeout=5
+                )
+                logger.info(f"  macOS version: {result.stdout.strip()}")
+            except Exception as e:
+                logger.debug(f"  sw_vers check: {e}")
+        
+        # ---- Phase 5: Create the app ----
+        logger.info("Creating TidalMDLApp window...")
+        app = TidalMDLApp()
+        logger.info("TidalMDLApp created successfully")
     
-    app.protocol("WM_DELETE_WINDOW", on_closing)
-    app.mainloop()
+        def on_closing():
+            """Cleanup on app close"""
+            logger.info("App closing - cleaning up...")
+            try:
+                # Shutdown thread pool
+                app._image_executor.shutdown(wait=False)
+                # Clear image cache
+                app._image_cache.clear()
+                app._image_cache_order.clear()
+            except:
+                pass
+            logger.info("App closed")
+            app.destroy()
+    
+        app.protocol("WM_DELETE_WINDOW", on_closing)
+        
+        logger.info("Entering mainloop...")
+        app.mainloop()
+        logger.info("Mainloop exited normally")
+        
+    except Exception as e:
+        # Write crash info to both logger and dedicated crash file
+        crash_msg = (
+            f"FATAL STARTUP CRASH\n"
+            f"{'=' * 60}\n"
+            f"Error: {e}\n"
+            f"Type: {type(e).__name__}\n"
+            f"{'=' * 60}\n"
+            f"{traceback.format_exc()}\n"
+        )
+        
+        # Try the logger first
+        try:
+            logger.critical(crash_msg)
+        except Exception:
+            pass
+        
+        # Also write to a dedicated crash file 
+        try:
+            with open(crash_log_path, "w", encoding="utf-8") as f:
+                f.write(crash_msg)
+                f.write(f"\nPlatform: {sys.platform}\n")
+                f.write(f"Python: {sys.version}\n")
+                f.write(f"Executable: {sys.executable}\n")
+                f.write(f"CWD: {os.getcwd()}\n")
+                f.write(f"Frozen: {getattr(sys, 'frozen', False)}\n")
+                if hasattr(sys, '_MEIPASS'):
+                    f.write(f"_MEIPASS: {sys._MEIPASS}\n")
+        except Exception:
+            pass
+        
+        raise
+    finally:
+        # Close stderr redirect
+        if stderr_log:
+            try:
+                stderr_log.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
