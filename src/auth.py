@@ -12,11 +12,8 @@ from dataclasses import dataclass, asdict
 from concurrent.futures import Future
 
 import tidalapi
-from rich.console import Console
-from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
-console = Console()
+from src.logger import logger
 
 
 @dataclass
@@ -75,7 +72,7 @@ def load_session(session_file: Path) -> Optional[SessionData]:
             data = json.load(f)
         return SessionData(**data)
     except (json.JSONDecodeError, TypeError, KeyError) as e:
-        console.print(f"[yellow]Warning:[/yellow] Could not load session file: {e}")
+        logger.warning(f"Could not load session file: {e}")
         return None
 
 
@@ -106,7 +103,7 @@ def delete_session(session_file: Path) -> None:
     """
     if session_file.exists():
         session_file.unlink()
-        console.print("[green]Session deleted successfully.[/green]")
+        logger.info("Session deleted successfully.")
 
 
 def create_session(quality: tidalapi.Quality = tidalapi.Quality.high_lossless) -> tidalapi.Session:
@@ -149,7 +146,7 @@ def restore_session(session: tidalapi.Session, session_data: SessionData) -> boo
         
         return success and session.check_login()
     except Exception as e:
-        console.print(f"[yellow]Warning:[/yellow] Could not restore session: {e}")
+        logger.warning(f"Could not restore session: {e}")
         return False
 
 
@@ -164,7 +161,7 @@ def perform_oauth_login(session: tidalapi.Session, session_file: Path) -> bool:
     Returns:
         True if login successful, False otherwise
     """
-    console.print("\n[bold blue]🔐 Tidal Authentication Required[/bold blue]\n")
+    logger.info("Tidal Authentication Required")
     
     try:
         # Start OAuth flow
@@ -173,31 +170,20 @@ def perform_oauth_login(session: tidalapi.Session, session_file: Path) -> bool:
         # Display the login URL
         auth_url = f"https://{login.verification_uri_complete}"
         
-        console.print(Panel(
-            f"[bold]Please visit this URL to log in:[/bold]\n\n"
-            f"[link={auth_url}]{auth_url}[/link]\n\n"
-            f"[dim]Or enter this code at [link=https://link.tidal.com]https://link.tidal.com[/link]:[/dim]\n"
-            f"[bold cyan]{login.user_code}[/bold cyan]",
-            title="🌐 Tidal Login",
-            border_style="blue"
-        ))
+        logger.info(f"Please visit this URL to log in: {auth_url}")
+        logger.info(f"Or enter this code at https://link.tidal.com: {login.user_code}")
         
         # Try to open browser automatically
         try:
             webbrowser.open(auth_url)
-            console.print("\n[dim]Browser opened automatically. Please complete the login.[/dim]")
+            logger.info("Browser opened automatically. Please complete the login.")
         except Exception:
-            console.print("\n[dim]Please open the URL manually in your browser.[/dim]")
+            logger.info("Please open the URL manually in your browser.")
         
-        # Wait for authentication with spinner
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Waiting for authentication...", total=None)
-            future.result()  # This blocks until authentication completes
-            progress.update(task, description="[green]✓ Authentication successful!")
+        # Wait for authentication
+        logger.info("Waiting for authentication...")
+        future.result()  # This blocks until authentication completes
+        logger.info("Authentication response received")
         
         # Check if login was successful
         if session.check_login():
@@ -205,15 +191,15 @@ def perform_oauth_login(session: tidalapi.Session, session_file: Path) -> bool:
             session_data = SessionData.from_session(session)
             save_session(session_data, session_file)
             
-            console.print(f"\n[green]✓ Logged in as:[/green] {session.user.first_name} {session.user.last_name}")
-            console.print(f"[dim]Session saved to: {session_file}[/dim]\n")
+            logger.info(f"Logged in as: {session.user.first_name} {session.user.last_name}")
+            logger.info(f"Session saved to: {session_file}")
             return True
         else:
-            console.print("\n[red]✗ Login failed. Please try again.[/red]")
+            logger.error("Login failed. Please try again.")
             return False
             
     except Exception as e:
-        console.print(f"\n[red]✗ Login error: {e}[/red]")
+        logger.error(f"Login error: {e}")
         return False
 
 
@@ -240,11 +226,11 @@ def get_authenticated_session(
         session_data = load_session(session_file)
         
         if session_data:
-            console.print("[dim]Found saved session, attempting to restore...[/dim]")
+            logger.info("Found saved session, attempting to restore...")
             
             if restore_session(session, session_data):
-                console.print(f"[green]✓ Session restored successfully![/green]")
-                console.print(f"[dim]Logged in as: {session.user.first_name} {session.user.last_name}[/dim]\n")
+                logger.info(f"Session restored successfully!")
+                logger.info(f"Logged in as: {session.user.first_name} {session.user.last_name}")
                 
                 # Update saved session with potentially refreshed tokens
                 new_session_data = SessionData.from_session(session)
@@ -252,7 +238,7 @@ def get_authenticated_session(
                 
                 return session
             else:
-                console.print("[yellow]Saved session expired or invalid, need to re-authenticate.[/yellow]")
+                logger.warning("Saved session expired or invalid, need to re-authenticate.")
     
     # Perform new OAuth login
     if perform_oauth_login(session, session_file):
@@ -283,7 +269,7 @@ def start_oauth_flow(quality: tidalapi.Quality = tidalapi.Quality.high_lossless)
             session=session
         )
     except Exception as e:
-        console.print(f"[red]Failed to start OAuth flow: {e}[/red]")
+        logger.error(f"Failed to start OAuth flow: {e}")
         return None
 
 
@@ -337,3 +323,4 @@ def complete_oauth_and_save(login_info: OAuthLoginInfo, session_file: Path) -> O
         save_session(session_data, session_file)
         return session
     return None
+

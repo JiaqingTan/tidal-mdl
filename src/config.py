@@ -3,7 +3,9 @@ Configuration management for Tidal MDL
 Loads settings from .env file and provides defaults
 """
 
+import sys
 import os
+import shutil
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
@@ -48,6 +50,34 @@ class Config:
     session_file: Path = field(default_factory=lambda: Path.home() / ".tidal-mdl" / "session.json")
 
 
+def get_config_path() -> Path:
+    """
+    Return a user-writable path for the config (.env) file.
+
+    When running inside a frozen PyInstaller bundle (e.g. macOS .app), the
+    working directory is typically inside the read-only app bundle, so we
+    store the config in ~/.tidal-mdl/config.env instead.
+
+    In development (non-frozen), we use the traditional .env in the CWD.
+    """
+    if getattr(sys, "frozen", False):
+        config_dir = Path.home() / ".tidal-mdl"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        user_config = config_dir / "config.env"
+
+        # Seed from the bundled .env on first run so the user starts with
+        # sensible defaults that match .env.example.
+        if not user_config.exists():
+            # PyInstaller puts bundled data files in sys._MEIPASS
+            bundled_env = Path(getattr(sys, "_MEIPASS", "")) / ".env"
+            if bundled_env.exists():
+                shutil.copy2(bundled_env, user_config)
+
+        return user_config
+
+    return Path(".env")
+
+
 def load_config(env_path: Optional[Path] = None) -> Config:
     """
     Load configuration from .env file
@@ -62,7 +92,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
     if env_path:
         load_dotenv(env_path)
     else:
-        load_dotenv()
+        load_dotenv(get_config_path())
     
     # Map quality strings to tidalapi.Quality
     quality_map = {
@@ -104,14 +134,17 @@ def load_config(env_path: Optional[Path] = None) -> Config:
     )
 
 
-def save_config(config: Config, env_path: Path = Path(".env")) -> None:
+def save_config(config: Config, env_path: Optional[Path] = None) -> None:
     """
     Save configuration to .env file
     
     Args:
         config: Config object to save
-        env_path: Path to .env file
+        env_path: Path to .env file. Defaults to get_config_path().
     """
+    if env_path is None:
+        env_path = get_config_path()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
     # Reverse quality maps
     quality_reverse = {
         tidalapi.Quality.low_96k: "NORMAL",

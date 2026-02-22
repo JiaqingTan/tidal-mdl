@@ -2081,8 +2081,8 @@ class TidalMDLApp(ctk.CTk):
             # Playlist settings
             self.config.playlist_album_artist = self.settings_widgets["playlist_album_artist"].get() or "Various Artists"
             
-            # Save to .env file
-            save_config(self.config, Path(".env"))
+            # Save to config file (uses ~/.tidal-mdl/config.env for bundled apps)
+            save_config(self.config)
             
             self._show_toast("Settings saved!", COLORS["green"])
             logger.info("Settings saved successfully")
