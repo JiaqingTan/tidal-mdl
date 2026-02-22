@@ -1483,13 +1483,20 @@ class TidalMDLApp(ctk.CTk):
         if not self.download_queue:
             return
         
+        # Snapshot the shared lists under the queue lock so we don't iterate
+        # a list that worker threads are mutating concurrently.
+        with self.download_queue.lock:
+            queue_snap = list(self.download_queue.queue)
+            completed_snap = list(self.download_queue.completed)
+            failed_snap = list(self.download_queue.failed)
+        
         # Get all tasks and deduplicate by ID (same task can be in queue and completed)
         all_tasks_dict = {}
-        for task in self.download_queue.queue:
+        for task in queue_snap:
             all_tasks_dict[task.id] = task
-        for task in self.download_queue.completed:
+        for task in completed_snap:
             all_tasks_dict[task.id] = task  # Completed takes precedence
-        for task in self.download_queue.failed:
+        for task in failed_snap:
             all_tasks_dict[task.id] = task  # Failed takes precedence
         
         current_task_ids = set(all_tasks_dict.keys())
@@ -2013,15 +2020,40 @@ class TidalMDLApp(ctk.CTk):
         if self.download_queue and not self.download_queue.is_running:
             self.download_queue.start_workers(None)
             self._show_toast("Downloads started", COLORS["green"])
-            # Start periodic UI refresh
+            # Start periodic UI refresh (idempotent — safe to call multiple times)
             self._start_download_refresh()
     
     def _start_download_refresh(self):
-        """Start periodic refresh of download UI"""
+        """Start periodic refresh of download UI.
+        
+        Idempotent: calling this while a refresh loop is already active is a no-op.
+        The loop keeps itself alive via self.after() and stops only when there
+        are no more tasks to display AND workers have stopped.
+        """
+        if getattr(self, '_refresh_loop_active', False):
+            return  # already running
+        self._refresh_loop_active = True
+        
         def refresh():
-            if self.download_queue and self.download_queue.is_running:
+            try:
                 self._refresh_downloads_ui()
-                self.after(800, refresh)  # Refresh every 800ms for better responsiveness
+            except Exception:
+                logger.exception("Error during download UI refresh")
+            
+            # Keep the loop alive while workers are running OR there are
+            # tasks still visible (so final statuses are rendered).
+            has_tasks = (self.download_queue and (
+                self.download_queue.queue or
+                self.download_queue.completed or
+                self.download_queue.failed
+            ))
+            is_running = self.download_queue and self.download_queue.is_running
+            
+            if is_running or has_tasks:
+                self.after(800, refresh)
+            else:
+                self._refresh_loop_active = False
+        
         refresh()
     
     def _stop_downloads(self):
