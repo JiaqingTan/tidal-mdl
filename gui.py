@@ -209,6 +209,16 @@ class TidalMDLApp(ctk.CTk):
         # Spacer
         ctk.CTkFrame(sidebar, fg_color="transparent").pack(fill="both", expand=True)
         
+        # FFmpeg status indicator
+        from src.downloader import FFMPEG_AVAILABLE
+        ffmpeg_text = "FFmpeg  ✓" if FFMPEG_AVAILABLE else "FFmpeg  ✗"
+        ffmpeg_color = COLORS["green"] if FFMPEG_AVAILABLE else COLORS["subtext"]
+        ctk.CTkLabel(
+            sidebar, text=ffmpeg_text,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=10),
+            text_color=ffmpeg_color
+        ).pack(pady=(0, 4))
+        
         # Status
         self.status_label = ctk.CTkLabel(
             sidebar, text="Connecting...",

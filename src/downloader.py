@@ -8,6 +8,7 @@ import aiohttp
 import aiofiles
 import os
 import re
+import sys
 import time
 import subprocess
 import shutil
@@ -41,18 +42,41 @@ from .logger import logger
 
 console = Console()
 
+# Common install locations that may not be in PATH inside a macOS .app bundle
+_EXTRA_PATH_DIRS = [
+    "/opt/homebrew/bin",      # Homebrew on Apple Silicon
+    "/usr/local/bin",         # Homebrew on Intel / manual installs
+    "/opt/local/bin",         # MacPorts
+    "/usr/bin",
+]
+
+
+def _find_ffmpeg() -> Optional[str]:
+    """
+    Locate the ffmpeg binary, searching common install locations that may
+    not be in PATH when running inside a macOS .app bundle.
+    
+    Returns the absolute path to ffmpeg, or None if not found.
+    """
+    # First, try the current PATH (works in dev / terminal)
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    
+    # Expand PATH with common locations and retry
+    if sys.platform == "darwin":
+        expanded = os.environ.get("PATH", "") + ":" + ":".join(_EXTRA_PATH_DIRS)
+        found = shutil.which("ffmpeg", path=expanded)
+        if found:
+            logger.info(f"Found ffmpeg outside default PATH: {found}")
+            return found
+    
+    return None
+
 
 def is_ffmpeg_available() -> bool:
     """Check if ffmpeg is available on the system"""
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-version"],
-            capture_output=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+    return FFMPEG_PATH is not None
 
 
 def remux_to_flac(input_path: Path, output_path: Path) -> bool:
@@ -67,9 +91,13 @@ def remux_to_flac(input_path: Path, output_path: Path) -> bool:
     Returns:
         True if successful, False otherwise
     """
+    if not FFMPEG_PATH:
+        logger.error("FFmpeg not available for remuxing")
+        return False
+    
     try:
         cmd = [
-            "ffmpeg",
+            FFMPEG_PATH,
             "-i", str(input_path),
             "-vn",           # No video
             "-acodec", "copy",  # Copy audio stream without re-encoding
@@ -117,10 +145,11 @@ def safe_add_extension(path: Path, extension: str) -> Path:
     return Path(str(path) + extension)
 
 
-# Check ffmpeg availability at module load
-FFMPEG_AVAILABLE = is_ffmpeg_available()
+# Resolve ffmpeg path at module load (searches expanded PATH on macOS)
+FFMPEG_PATH = _find_ffmpeg()
+FFMPEG_AVAILABLE = FFMPEG_PATH is not None
 if FFMPEG_AVAILABLE:
-    logger.info("FFmpeg detected - FLAC remuxing enabled")
+    logger.info(f"FFmpeg detected at {FFMPEG_PATH} - FLAC remuxing enabled")
 else:
     logger.warning("FFmpeg not found - DASH FLAC streams will be saved as M4A container")
 
